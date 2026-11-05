@@ -45,7 +45,8 @@ test('setup installs the sudoers rule and the login agent', () => {
   const sb = makeSandbox();
   const r = sb.runCli(['setup']);
   assert.equal(r.code, 0, r.stderr);
-  const [visudo] = sb.calls('visudo'); const [install] = sb.calls('install');
+  const [visudo] = sb.calls('visudo'); const [makeDir, install] = sb.calls('install');
+  assert.deepEqual(makeDir.args, ['-d', '-m', '0755', '-o', 'root', '-g', 'wheel', '/etc/sudoers.d']); assert.equal(makeDir.viaSudo, true);
   assert.equal(visudo.args[0], '-cf'); assert.equal(visudo.content, sudoersRule({ user: USER })); assert.equal(visudo.viaSudo, true);
   assert.deepEqual(install.args, ['-m', '0440', '-o', 'root', '-g', 'wheel', visudo.args[1], `/etc/sudoers.d/${sudoersFileName(USER)}`]);
   assert.equal(install.content, sudoersRule({ user: USER })); assert.equal(fs.existsSync(visudo.args[1]), false);
