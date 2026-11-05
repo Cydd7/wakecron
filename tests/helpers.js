@@ -30,7 +30,9 @@ function capture() {
 }
 
 function makeSandbox({ rootName = 'wakecron', rootInHome } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wakecron-test-'));
+  // Real path: on macOS the temp folder is under /var, a symlink to /private/var, and Node runs
+  // the copied CLI from its real path, so an unresolved root would never match the CLI's own.
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wakecron-test-')));
   sandboxes.push(dir);
   const home = path.join(dir, 'home');
   const root = rootInHome ? path.join(home, rootInHome) : path.join(dir, rootName);

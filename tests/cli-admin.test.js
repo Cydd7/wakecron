@@ -69,6 +69,16 @@ test('setup warns about privacy-protected folders', () => {
   assert.match(sb.runCli(['setup']).stderr, /is inside .*Documents\. macOS blocks background jobs from reading there — move this folder to ~\/wakecron\./);
 });
 
+test('setup spots a protected folder even when HOME goes through a symlink', async (t) => {
+  const sb = makeSandbox({ rootInHome: 'Documents/wakecron' });
+  const homeLink = `${sb.home}-link`;
+  fs.symlinkSync(sb.home, homeLink);
+  t.after(() => fs.rmSync(homeLink, { force: true }));
+  const io = sb.io({ home: homeLink });
+  await main(['setup'], io);
+  assert.match(io.stderr.text, /is inside .*Documents\. macOS blocks background jobs/);
+});
+
 test('setup stops when visudo rejects the rule', () => {
   const sb = makeSandbox();
   const r = sb.runCli(['setup'], { env: { FAKE_FAIL: 'visudo' } });

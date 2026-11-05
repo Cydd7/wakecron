@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { makeSandbox } = require('./helpers');
 
@@ -146,6 +147,25 @@ test('refuses to run off macOS', { skip: process.platform === 'darwin' }, () => 
   const sb = makeSandbox();
   const r = sb.runCli(['list'], { env: { WAKECRON_BIN_DIR: '' } });
   assert.equal(r.code, 1); assert.match(r.stderr, /wakecron only runs on macOS/);
+});
+
+test('works when the temp folder is reached through a symlink (macOS /var → /private/var)', (t) => {
+  const realTmp = fs.realpathSync(os.tmpdir());
+  const link = path.join(realTmp, `wakecron-link-${process.pid}`);
+  fs.rmSync(link, { force: true });
+  fs.symlinkSync(realTmp, link);
+  t.after(() => fs.rmSync(link, { force: true }));
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = link;
+  let sb;
+  try {
+    sb = withHello();
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+  }
+  assert.equal(sb.runCli(['add', 'hello.sh', '07:30']).code, 0);
+  assert.equal(sb.readJob('hello-0730').root, sb.root);
 });
 
 test('review focus: a script with spaces in a subfolder', () => {
