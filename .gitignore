@@ -1,0 +1,5 @@
+jobs/
+logs/
+state/
+dist/
+node_modules/

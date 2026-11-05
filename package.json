@@ -1,0 +1,16 @@
+{
+  "name": "wakecron",
+  "version": "1.0.0",
+  "description": "Wake your Mac and run scripts on a schedule",
+  "private": true,
+  "type": "commonjs",
+  "bin": {
+    "wakecron": "./wakecron"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
