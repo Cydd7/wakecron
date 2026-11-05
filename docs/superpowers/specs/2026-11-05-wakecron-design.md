@@ -43,6 +43,7 @@ catching up runs missed while the Mac was off, per-job timeouts, passing argumen
 wakecron/
 ├── wakecron            entry point (#!/usr/bin/env node); checks Node version, calls lib/cli.js
 ├── lib/
+│   ├── util.js         UsageError, ensureDir, writeFileAtomic
 │   ├── schedule.js     parse times and days, next run, next wake, launchd intervals, display (pure)
 │   ├── plist.js        JS value → plist XML (pure)
 │   ├── sudoers.js      sudoers rule text and username check (pure)
@@ -326,17 +327,20 @@ path to delete for a full removal.
 The rule installed by `setup`, where `<user>` is the macOS short user name:
 
 ```
-Cmnd_Alias WAKECRON_PMSET = \
+<user> ALL = (root) NOPASSWD: \
   /usr/bin/pmset schedule wake [0-9][0-9]/[0-9][0-9]/[0-9][0-9] [0-9][0-9]\:[0-9][0-9]\:[0-9][0-9] wakecron, \
   /usr/bin/pmset schedule cancel wake [0-9][0-9]/[0-9][0-9]/[0-9][0-9] [0-9][0-9]\:[0-9][0-9]\:[0-9][0-9] wakecron
-<user> ALL = (root) NOPASSWD: WAKECRON_PMSET
 ```
 
+- The commands are listed directly rather than through a `Cmnd_Alias`: alias names are global
+  across all sudoers files, so a second user running `setup` would otherwise define the same
+  alias twice.
 - No `*` wildcards. Only these exact command shapes match, so the rule can't change other pmset
   settings, schedule shutdowns, or pass extra arguments. sudo matches the space-joined argument
   string, so splitting the date and time into two arguments also matches; that is harmless
   because the joined text must still be exactly `schedule [cancel] wake <digits> wakecron`.
-- Probed during design with real sudo 1.9.15p5 in this container: `visudo` accepts the rule; the
+- Probed during design with real sudo 1.9.15p5 in this container (alias form; the live test in
+  §11 re-checks the final direct form): `visudo` accepts the rule; the
   two intended commands run without a password; extra arguments, other owners, no owner,
   `shutdown`, `cancelall`, `repeat`, power settings and letters in the date all require a
   password; `sudo -n -l <command>` exits 0 only for the allowed form.
