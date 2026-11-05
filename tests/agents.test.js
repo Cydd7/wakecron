@@ -38,6 +38,20 @@ test('syncAgentObject', () => {
   });
 });
 
+test('stableNodePath prefers a PATH entry that is the same binary (Homebrew symlink)', () => {
+  const sb = makeSandbox();
+  const brewBin = path.join(sb.home, 'brew', 'bin');
+  fs.mkdirSync(brewBin, { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(brewBin, 'node'));
+  const other = path.join(sb.home, 'other');
+  fs.mkdirSync(other);
+  fs.writeFileSync(path.join(other, 'node'), '#!/bin/sh\n', { mode: 0o755 });
+  const ctx = sb.ctx({ env: { ...sb.env, PATH: `${other}:${brewBin}:/usr/bin` } });
+  assert.equal(a.stableNodePath(ctx), path.join(brewBin, 'node'));
+  assert.equal(a.syncAgentObject(ctx).ProgramArguments[0], path.join(brewBin, 'node'));
+  assert.equal(a.stableNodePath(sb.ctx({ env: { ...sb.env, PATH: other } })), process.execPath);
+});
+
 test('installAgent writes, loads and reloads; removeAgent is idempotent', () => {
   const sb = makeSandbox(); const ctx = sb.ctx();
   const obj = { Label: 'local.wakecron.t', ProgramArguments: ['/bin/true'] };

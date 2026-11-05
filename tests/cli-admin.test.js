@@ -24,7 +24,7 @@ test('sync rebuilds agents from this folder and Node, and removes orphans', () =
   const r = sb.runCli(['sync']);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^Synced 1 job\(s\), removed 1 orphaned agent\(s\), 1 wake-up\(s\) scheduled\.$/m);
-  const job = sb.readJob('hello-0730'); assert.equal(job.node, process.execPath); assert.equal(job.root, sb.root);
+  const job = sb.readJob('hello-0730'); assert.equal(fs.realpathSync(job.node), fs.realpathSync(process.execPath)); assert.equal(job.root, sb.root);
   assert.match(fs.readFileSync(sb.agentFile('local.wakecron.hello-0730'), 'utf8'), new RegExp(`${sb.root}/wakecron`));
   assert.deepEqual(sb.loaded(), ['local.wakecron.hello-0730', 'local.wakecron.sync']);
   assert.equal(fs.existsSync(sb.agentFile('local.wakecron.ghost-0700')), false);

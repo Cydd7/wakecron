@@ -17,9 +17,20 @@ test('add schedules a daily job, loads its agent and arms a wake-up', () => {
   assert.match(r.stdout, new RegExp(`^Next run: \\w{3} \\d{2} \\w{3} 07:30 · Mac wakes \\w{3} \\d{2} \\w{3} 07:29$`, 'm'));
   const job = sb.readJob('hello-0730');
   assert.deepEqual(job.schedule, { type: 'repeat', hour: 7, minute: 30, days: [0, 1, 2, 3, 4, 5, 6] });
-  assert.equal(job.root, sb.root); assert.equal(job.node, process.execPath);
+  assert.equal(job.root, sb.root); assert.equal(fs.realpathSync(job.node), fs.realpathSync(process.execPath));
   assert.deepEqual(sb.loaded(), ['local.wakecron.hello-0730']);
   assert.equal(sb.wakes().length, 1); assert.match(sb.wakes()[0], /^\d\d\/\d\d\/\d\d 07:29:00\|wakecron$/);
+});
+
+test('jobs record a stable node path, not a versioned one (Homebrew upgrades)', () => {
+  const sb = withHello();
+  const brewBin = path.join(sb.home, 'brew', 'bin');
+  fs.mkdirSync(brewBin, { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(brewBin, 'node'));
+  const r = sb.runCli(['add', 'hello.sh', '07:30'], { env: { PATH: `${brewBin}:${process.env.PATH}` } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(sb.readJob('hello-0730').node, path.join(brewBin, 'node'));
+  assert.ok(fs.readFileSync(sb.agentFile('local.wakecron.hello-0730'), 'utf8').includes(`<string>${path.join(brewBin, 'node')}</string>`));
 });
 
 test('add: --days and one-time forms', () => {
