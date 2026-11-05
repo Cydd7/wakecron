@@ -49,8 +49,13 @@ test('canSudoPmset follows the sudo rule and is cached', () => {
   assert.equal(macos.canSudoPmset(ctx), true);
   macos.canSudoPmset(ctx);
   assert.equal(sb.calls('sudo').length, 1);
-  assert.deepEqual(sb.calls('sudo')[0].args, ['-n', '-l', path.join(sb.bin, 'pmset'), 'schedule', 'wake', '01/01/30 00:00:00', 'wakecron']);
+  assert.deepEqual(sb.calls('sudo')[0].args, ['-n', '-k', '-l', path.join(sb.bin, 'pmset'), 'schedule', 'wake', '01/01/30 00:00:00', 'wakecron']);
   assert.equal(macos.canSudoPmset(sb.ctx({ env: { ...sb.env, FAKE_SUDO: 'deny' } })), false);
+});
+
+test('canSudoPmset is not fooled by credentials cached from a recent sudo', () => {
+  const sb = makeSandbox();
+  assert.equal(macos.canSudoPmset(sb.ctx({ env: { ...sb.env, FAKE_SUDO: 'cached' } })), false);
 });
 
 test('notify passes title and text as arguments, never as AppleScript', () => {

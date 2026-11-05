@@ -30,6 +30,7 @@ test('real sudo allows only the two wake commands', { skip: canRun ? false : 'ne
     assert.equal(asUser(pmset, 'schedule', 'wake', D, 'wakecron'), 0);
     assert.equal(asUser(pmset, 'schedule', 'cancel', 'wake', D, 'wakecron'), 0);
     assert.equal(asUser('-l', pmset, 'schedule', 'wake', '01/01/30 00:00:00', 'wakecron'), 0);
+    assert.equal(asUser('-k', '-l', pmset, 'schedule', 'wake', '01/01/30 00:00:00', 'wakecron'), 0); // wakecron's probe
     for (const denied of [
       ['schedule', 'wake', D, 'wakecron', '-a'], ['schedule', 'wake', D, 'evil'], ['schedule', 'wake', D],
       ['schedule', 'shutdown', D, 'wakecron'], ['schedule', 'cancelall'], ['-a', 'sleep', '0'],

@@ -57,6 +57,13 @@ test('setup installs the sudoers rule and the login agent', () => {
   assert.match(sb.runCli(['list']).stdout, /^✓ login agent$/m);
 });
 
+test('setup reports a rule sudo ignores, even right after asking for the password', () => {
+  const sb = makeSandbox();
+  const r = sb.runCli(['setup'], { env: { FAKE_SUDO: 'cached' } });
+  assert.match(r.stdout, /✗ sudo doesn't accept the rule yet/);
+  assert.doesNotMatch(r.stdout, /✓ passwordless wake-ups enabled/);
+});
+
 test('setup warns about privacy-protected folders', () => {
   const sb = makeSandbox({ rootInHome: 'Documents/wakecron' });
   assert.match(sb.runCli(['setup']).stderr, /is inside .*Documents\. macOS blocks background jobs from reading there — move this folder to ~\/wakecron\./);

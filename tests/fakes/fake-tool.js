@@ -5,7 +5,9 @@
 // Every call is appended to $FAKE_STATE/calls.jsonl as {tool, args, viaSudo, content?} before it
 // acts. Loaded agents live in loaded.json and scheduled wake-ups in wakes.json ("date|owner").
 // FAKE_FAIL="tool" or "tool:<first arg>" (comma list) makes a call print "fake failure" and exit 1.
-// FAKE_SUDO=deny makes `sudo -n` behave as if a password were required.
+// FAKE_SUDO=deny makes `sudo -n` behave as if a password were required. FAKE_SUDO=cached models
+// credentials cached by a recent sudo while the wakecron rule is NOT active: `sudo -n` works, but
+// `sudo -n -k` (which ignores cached credentials) needs a password.
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -106,12 +108,15 @@ function sudo() {
   let i = 0;
   let nonInteractive = false;
   let list = false;
+  let ignoreCached = false;
   for (; i < args.length && args[i].startsWith('-'); i++) {
     if (args[i] === '-n') nonInteractive = true;
     if (args[i] === '-l') list = true;
+    if (args[i] === '-k') ignoreCached = true;
   }
   const command = args.slice(i);
-  if (process.env.FAKE_SUDO === 'deny' && nonInteractive) fail('sudo: a password is required', 1);
+  const mode = process.env.FAKE_SUDO;
+  if (nonInteractive && (mode === 'deny' || (mode === 'cached' && ignoreCached))) fail('sudo: a password is required', 1);
   if (list) {
     out(`${command.join(' ')}\n`);
     return 0;
