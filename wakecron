@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+'use strict';
+// wakecron — wake your Mac and run scripts on a schedule. See README.md.
+var major = Number(process.versions.node.split('.')[0]);
+if (major < 20) {
+  console.error('wakecron needs Node.js 20 or newer (found ' + process.version + ').');
+  process.exit(1);
+}
+
+require('./lib/cli').main(process.argv.slice(2)).then(
+  function (code) { process.exitCode = code; },
+  function (err) {
+    console.error(err && err.stack ? err.stack : String(err));
+    process.exitCode = 1;
+  }
+);
