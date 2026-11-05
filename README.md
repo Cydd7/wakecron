@@ -129,8 +129,9 @@ Job ids look like `backup-0730`: the script name plus the time.
 - **"Operation not permitted"** in a log means macOS privacy rules blocked the script. Give Full
   Disk Access to the program named in the error, often `node` or `bash`, in System Settings →
   Privacy & Security.
-- **Moved this folder, or switched Node versions** (nvm, a Homebrew upgrade)? Run
-  `./wakecron sync`. `./wakecron list` tells you when it's needed.
+- **Moved this folder, or switched Node versions with nvm?** Run `./wakecron sync`.
+  `./wakecron list` tells you when it's needed. Homebrew upgrades need nothing: jobs use
+  `/opt/homebrew/bin/node`, which survives them.
 - **Nothing happened?** Check `./wakecron list` for ✗ and `!` lines, then `logs/`, then
   `pmset -g sched`, which should list wake-ups `by 'wakecron'`.
 
