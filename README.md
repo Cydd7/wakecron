@@ -32,6 +32,8 @@ anyway, the script runs as soon as the Mac wakes.
    Setup lets wakecron schedule wake-ups without asking for your password each time. It also adds
    a small login item that re-arms wake-ups whenever you log in.
 
+   Run wakecron as yourself, never with `sudo`: it asks for your password itself when it needs it.
+
 macOS may then show a **Background Items Added** notification for `node`. That's wakecron; leave
 it allowed in System Settings → General → Login Items & Extensions.
 

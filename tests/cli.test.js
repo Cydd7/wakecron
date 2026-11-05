@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { main } = require('../lib/cli');
 const { makeSandbox } = require('./helpers');
 
 const HELLO = '#!/bin/sh\necho hi from hello\n';
@@ -141,6 +142,15 @@ test('help, unknown commands and bad ids', () => {
   assert.equal(sb.runCli(['frobnicate']).code, 2);
   assert.match(sb.runCli(['run', '../x']).stderr, /"\.\.\/x" is not a valid job id/);
   const r = sb.runCli(['remove', 'nope-0730']); assert.equal(r.code, 2); assert.match(r.stderr, /no job "nope-0730"/);
+});
+
+test('refuses to run as root (e.g. sudo ./wakecron setup), except for help', async () => {
+  const sb = makeSandbox();
+  const asRoot = () => sb.io({ uid: 0, platform: 'darwin', env: { ...sb.env, WAKECRON_BIN_DIR: '' } });
+  const io = asRoot();
+  assert.equal(await main(['setup'], io), 2);
+  assert.match(io.stderr.text, /don't run wakecron with sudo or as root/);
+  assert.equal(await main(['help'], asRoot()), 0);
 });
 
 test('refuses to run off macOS', { skip: process.platform === 'darwin' }, () => {
