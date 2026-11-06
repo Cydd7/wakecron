@@ -199,22 +199,50 @@ order. A step that fails doesn't stop the others, but you get a "morning.sh fail
 
 1. Pick a backup, and open its `shortcut-names.txt` to check it has what you need.
 2. Quit the Shortcuts app.
-3. Change the first line below to the backup you picked, then paste all three lines into Terminal.
-   The last line stops before it touches your library if that backup isn't there:
+3. Change the first line below to the backup you picked, then paste the whole block into Terminal:
 
    ```bash
    BACKUP=~/Documents/Backups/Shortcuts/daily/2026-11-05
    SAVED=~/Documents/Backups/Shortcuts/before-restore-$(date +%Y%m%d-%H%M%S)
-   [ -f "$BACKUP/Shortcuts.sqlite.gz" ] && mkdir -p "$SAVED" && mv ~/Library/Shortcuts/Shortcuts.sqlite* "$SAVED"/ && gunzip -c "$BACKUP/Shortcuts.sqlite.gz" > ~/Library/Shortcuts/Shortcuts.sqlite && echo "Restored. Now restart your Mac."
+   if gunzip -t "$BACKUP/Shortcuts.sqlite.gz"; then
+     mkdir -p "$SAVED" &&
+     find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} "$SAVED"/ \; &&
+     [ -z "$(find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*')" ] &&
+     gunzip -c "$BACKUP/Shortcuts.sqlite.gz" > ~/Library/Shortcuts/Shortcuts.sqlite &&
+     echo "Restored. Now restart your Mac." ||
+     echo "Restore failed. Anything it moved is in $SAVED; put it back with the undo commands below."
+   else
+     echo "That backup can't be read. Nothing was changed."
+   fi
    ```
 
-   You should see `Restored. Now restart your Mac.` If you don't, check the folder in the first
-   line. If `~/Library/Shortcuts` no longer has a `Shortcuts.sqlite`, follow the undo note below.
+   It ends by printing one of three lines:
+   - **Restored. Now restart your Mac.** It worked.
+   - **That backup can't be read. Nothing was changed.** Pick another backup.
+   - **Restore failed.** Your own library is safe in the `before-restore-…` folder the line names.
+     Put it back with the undo commands below.
 4. Restart the Mac, then open Shortcuts.
 
-Your library from before the restore is kept in the `before-restore-…` folder, and the routine
-never deletes those. To undo the restore, quit Shortcuts, move the files in that folder back into
-`~/Library/Shortcuts/`, and restart.
+**To undo a restore**, quit Shortcuts, change the first line below to the `before-restore-…` folder
+the restore made, then paste the whole block into Terminal. It moves the restored library aside
+into an `undone-…` folder first, then puts back every file of yours, so the two never get mixed:
+
+```bash
+SAVED=~/Documents/Backups/Shortcuts/before-restore-20261106-093000
+UNDONE=~/Documents/Backups/Shortcuts/undone-$(date +%Y%m%d-%H%M%S)
+if [ -f "$SAVED/Shortcuts.sqlite" ]; then
+  mkdir -p "$UNDONE" &&
+  find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} "$UNDONE"/ \; &&
+  [ -z "$(find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*')" ] &&
+  find "$SAVED" -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} ~/Library/Shortcuts/ \; &&
+  echo "Undone. Now restart your Mac." ||
+  echo "Undo failed. Nothing was deleted: your library is in $SAVED, the restored one in $UNDONE."
+else
+  echo "No saved library in $SAVED. Nothing was changed."
+fi
+```
+
+The routine never deletes `before-restore-…` or `undone-…` folders.
 
 ### When something goes wrong
 

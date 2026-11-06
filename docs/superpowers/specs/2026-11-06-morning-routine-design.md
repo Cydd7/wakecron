@@ -339,17 +339,22 @@ and pasted. The top of the README gets a one-line pointer to it. It has six part
    - The steps:
      1. Pick a backup and check its `shortcut-names.txt`.
      2. Quit Shortcuts.
-     3. Edit only the first line below, then run all three lines. The last line stops before it
-        touches your library if the backup isn't there:
-        ```bash
-        BACKUP=~/Documents/Backups/Shortcuts/daily/2026-11-05
-        SAVED=~/Documents/Backups/Shortcuts/before-restore-$(date +%Y%m%d-%H%M%S)
-        [ -f "$BACKUP/Shortcuts.sqlite.gz" ] && mkdir -p "$SAVED" && mv ~/Library/Shortcuts/Shortcuts.sqlite* "$SAVED"/ && gunzip -c "$BACKUP/Shortcuts.sqlite.gz" > ~/Library/Shortcuts/Shortcuts.sqlite && echo "Restored. Now restart your Mac."
-        ```
+     3. Edit only the first line of the README's restore block, then paste the whole block.
+        `tests/readme-restore.test.js` runs it as written in bash and zsh. The block:
+        - checks the backup with `gunzip -t` first, and changes nothing if it can't be read;
+        - moves every `Shortcuts.sqlite*` file (the database and its `-wal`/`-shm`) into a new
+          `before-restore-<date-time>` folder, found with `find` so a missing library is fine;
+        - unpacks the backup only if no `Shortcuts.sqlite*` file is left behind;
+        - prints exactly one of `Restored. Now restart your Mac.`, `That backup can't be read.
+          Nothing was changed.` or `Restore failed. …`, which names the folder holding the
+          library.
      4. Restart the Mac, then open Shortcuts.
-   - To undo: quit Shortcuts, move the files from the `before-restore-…` folder back into
-     `~/Library/Shortcuts/`, and restart.
-   - Pruning never touches `before-restore-*` folders.
+   - To undo, the README gives a second block that takes the `before-restore-…` folder on its
+     first line. It refuses a folder without a saved `Shortcuts.sqlite`. Otherwise it first moves
+     every current `Shortcuts.sqlite*` file into an `undone-<date-time>` folder, and only then puts
+     the saved files back. A `-wal` left by the restored library can then never be applied to the
+     person's own.
+   - Pruning never touches `before-restore-*` or `undone-*` folders.
 6. **When something goes wrong.**
    - If you see the "morning.sh failed" notification, run `tail -n 20 logs/morning-0700.log`.
    - If the log shows the Full Disk Access message, repeat setup step 1. This is needed again
