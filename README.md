@@ -164,7 +164,8 @@ Each morning adds a backup to `~/Documents/Backups/Shortcuts`:
 - **Weekly and monthly:** the first backup of each week (Monday to Sunday) is also kept in
   `weekly/`, newest 4, and the first backup of each month in `monthly/`, newest 12.
 - **Counted, not aged:** if the Mac is off for a while, your most recent backups stay. The routine
-  only ever deletes the dated folders it made itself.
+  only ever deletes its own backups: dated folders with a `Shortcuts.sqlite.gz` inside. A folder
+  dated in the future, left by a wrong clock, is never deleted and never pushes out a new backup.
 
 The routine's output is in `logs/morning-0700.log`.
 

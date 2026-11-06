@@ -203,9 +203,12 @@ node morning/backup-shortcuts.js [--to DIR] [--daily N] [--weekly N] [--monthly 
    - Both go through an `.incoming-*` folder, like step 6.
    - Copies use `fs.copyFileSync` with `COPYFILE_FICLONE`. On APFS that makes a clone, which takes
      no extra space and is still an independent file. Elsewhere it makes a plain copy.
-8. **Prune.** In each of `daily/`, `weekly/` and `monthly/`, look only at folders named exactly
-   `YYYY-MM-DD`. Keep the newest N by name and delete the rest. Nothing else in those folders, or
-   anywhere else in the backup folder, is touched.
+8. **Prune.** In each of `daily/`, `weekly/` and `monthly/`, look only at backup folders: folders
+   named exactly `YYYY-MM-DD`, dated today or earlier, that hold a `Shortcuts.sqlite.gz`. Keep the
+   newest N by name and delete the rest. Nothing else in those folders, or anywhere else in the
+   backup folder, is touched. A dated folder without an archive is the person's own, and one dated
+   after today comes from a wrong clock; neither is counted, so neither can push out today's
+   backup.
 9. **Report** the result (§5.4) and exit 0.
 
 The temporary folder is always deleted, whether the run succeeds or fails. A failure in steps 3–7
@@ -217,6 +220,7 @@ These are pure functions with their own tests.
 
 - Dates are local calendar dates. Weeks run Monday to Sunday, and months are calendar months.
 - Every backup folder, of any kind, is named after the date the backup was taken.
+- Folders dated after today, which a wrong clock can leave behind, are never counted or pruned.
 - **Daily:** one backup per date. A later run on the same day replaces it.
 - **Weekly:** the first backup of each week. Later runs that week never replace it.
 - **Monthly:** the first backup of each month. Later runs that month never replace it.
@@ -302,8 +306,9 @@ After a Homebrew upgrade of node, macOS forgets this; do it again with the new p
 - The library is opened read-only, and the step never writes to it.
 - The step makes no network connections. Copies leave the Mac only if the backup folder itself
   syncs, for example when Documents is stored in iCloud.
-- Pruning deletes only folders named `YYYY-MM-DD` that sit directly inside the `daily/`,
-  `weekly/` and `monthly/` folders of the backup folder.
+- Pruning deletes only folders named `YYYY-MM-DD`, dated today or earlier and holding a
+  `Shortcuts.sqlite.gz`, that sit directly inside the `daily/`, `weekly/` and `monthly/` folders of
+  the backup folder.
 
 ## 8. README — the "Morning routine" section
 

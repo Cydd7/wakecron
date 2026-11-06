@@ -45,10 +45,11 @@ function mondayOf(day) {
 // ---- Rotation (pure) ----------------------------------------------------------------------
 
 // Decides what one run does, given today's date and the folder names already in daily/,
-// weekly/ and monthly/. Only YYYY-MM-DD names count; anything else is never counted or pruned.
+// weekly/ and monthly/. Only YYYY-MM-DD names up to today count; anything else, including a
+// folder dated in the future by a wrong clock, is never counted or pruned.
 function planRotation({ today, existing, keep }) {
   const dated = {};
-  for (const kind of KINDS) dated[kind] = existing[kind].filter((name) => DATED.test(name));
+  for (const kind of KINDS) dated[kind] = existing[kind].filter((name) => DATED.test(name) && name <= today);
 
   const monday = mondayOf(today);
   const sunday = addDays(monday, 6);
@@ -284,8 +285,12 @@ function snapshot(library, temp, ctx) {
 // Steps 6-8: save today's daily backup, promote it, prune. Nothing is pruned unless saving and
 // promoting succeeded; a failure removes this run's staging folders and leaves the rest alone.
 function store(opts, today, copy, names, staged) {
+  // Only folders holding an archive are backups; a dated folder without one is the person's own.
   const existing = {};
-  for (const kind of KINDS) existing[kind] = listFolders(path.join(opts.to, kind));
+  for (const kind of KINDS) {
+    const dir = path.join(opts.to, kind);
+    existing[kind] = listFolders(dir).filter((name) => fs.existsSync(path.join(dir, name, ARCHIVE)));
+  }
   const plan = planRotation({ today, existing, keep: opts.keep });
 
   const dailyDir = path.join(opts.to, 'daily');

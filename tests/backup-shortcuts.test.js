@@ -93,11 +93,11 @@ function tree(root) {
   return found;
 }
 
-// Older backups that a failed run must leave exactly as they are.
+// Older backups (each holding an archive) that a failed run must leave exactly as they are.
 function seedBackups(to) {
   for (const rel of ['daily/2026-10-31', 'daily/2026-11-01', 'daily/2026-11-02', 'daily/2026-11-03', 'daily/2026-11-04', 'weekly/2026-10-26', 'monthly/2026-10-01']) {
     fs.mkdirSync(path.join(to, rel), { recursive: true });
-    fs.writeFileSync(path.join(to, rel, 'old.txt'), rel);
+    fs.writeFileSync(path.join(to, rel, 'Shortcuts.sqlite.gz'), rel);
   }
 }
 
@@ -206,6 +206,17 @@ test("names it didn't create are never counted or pruned", () => {
   const daily = ['notes.txt', '2026-11-06-old', '.incoming-x', 'before-restore-20261101-120000', '2026-11-01', '2026-11-02'];
   assert.deepEqual(planRotation({ today: '2026-11-06', existing: { ...none, daily }, keep: { ...KEEP, daily: 1 } }).prune.daily,
     ['2026-11-01', '2026-11-02']);
+});
+
+test('folders dated after today are never counted or pruned', () => {
+  const plan = planRotation({
+    today: '2026-11-06',
+    existing: { daily: ['2099-01-01', '2026-11-05'], weekly: ['2026-11-08'], monthly: ['2099-01-01'] },
+    keep: { daily: 1, weekly: 4, monthly: 12 },
+  });
+  assert.deepEqual(plan.prune, { daily: ['2026-11-05'], weekly: [], monthly: [] }); // today's new backup stays
+  assert.equal(plan.weekly, true); // a Sunday folder dated in the future isn't this week's backup
+  assert.equal(plan.monthly, true);
 });
 
 test('lowering a count prunes down to it', () => {
@@ -389,6 +400,7 @@ test("never counts or deletes things it didn't create", () => { // Review Focus 
   const daily = path.join(sb.to, 'daily');
   for (const d of ['2026-10-29', '2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']) {
     fs.mkdirSync(path.join(daily, d), { recursive: true });
+    fs.writeFileSync(path.join(daily, d, 'Shortcuts.sqlite.gz'), 'an earlier backup');
   }
   fs.mkdirSync(path.join(daily, 'notes'));
   fs.mkdirSync(path.join(daily, '2026-11-01-old'));
@@ -399,6 +411,26 @@ test("never counts or deletes things it didn't create", () => { // Review Focus 
   assert.deepEqual(fs.readdirSync(daily).sort(),
     ['2026-10-01', '2026-10-31', '2026-11-01', '2026-11-01-old', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', 'notes']);
   assert.ok(fs.existsSync(path.join(sb.to, 'before-restore-20261101-120000')));
+});
+
+test('a folder dated in the future never pushes out the new backup', () => {
+  const sb = sandbox();
+  fs.mkdirSync(path.join(sb.to, 'daily', '2099-01-01'), { recursive: true });
+  fs.writeFileSync(path.join(sb.to, 'daily', '2099-01-01', 'Shortcuts.sqlite.gz'), 'made while the clock was wrong');
+  const r = sb.run(['--daily', '1']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'daily')).sort(), ['2026-11-06', '2099-01-01']);
+});
+
+test('a dated folder with no backup in it is yours: never counted or deleted', () => {
+  const sb = sandbox();
+  const mine = path.join(sb.to, 'daily', '2026-01-01');
+  fs.mkdirSync(mine, { recursive: true });
+  fs.writeFileSync(path.join(mine, 'my-notes.txt'), 'notes');
+  const r = sb.run(['--daily', '1']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(fs.readFileSync(path.join(mine, 'my-notes.txt'), 'utf8'), 'notes');
+  assert.doesNotMatch(r.stdout, /Removed/);
 });
 
 test('backs up a library another program has open, changes not yet checkpointed included, without writing to it',
