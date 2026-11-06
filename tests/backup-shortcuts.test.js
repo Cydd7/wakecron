@@ -93,6 +93,14 @@ function tree(root) {
   return found;
 }
 
+// Older backups that a failed run must leave exactly as they are.
+function seedBackups(to) {
+  for (const rel of ['daily/2026-10-31', 'daily/2026-11-01', 'daily/2026-11-02', 'daily/2026-11-03', 'daily/2026-11-04', 'weekly/2026-10-26', 'monthly/2026-10-01']) {
+    fs.mkdirSync(path.join(to, rel), { recursive: true });
+    fs.writeFileSync(path.join(to, rel, 'old.txt'), rel);
+  }
+}
+
 // The real sqlite3, for tests that need SQLite's own behaviour.
 function sqlite(db, sql) {
   const r = spawnSync('sqlite3', [db, sql], { encoding: 'utf8' });
@@ -449,4 +457,115 @@ test('as a command: a backup into the default folder exits 0', () => {
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^Backed up 3 shortcuts \(1 KB\) to ~\/Documents\/Backups\/Shortcuts\/daily\/\d{4}-\d{2}-\d{2}$/m);
   assert.deepEqual(fs.readdirSync(sb.tmp), []);
+});
+
+// ---- Failures and tidy ----------------------------------------------------------------------
+
+test('no library: exit 1 with the fix, and the backup folder is not touched', () => {
+  const sb = sandbox({ library: null });
+  const r = sb.run([]);
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'backup-shortcuts: no Shortcuts library at ~/Library/Shortcuts/Shortcuts.sqlite. Open the Shortcuts app once, then try again.\n');
+  assert.equal(fs.existsSync(sb.to), false);
+  assert.deepEqual(sb.calls('sqlite3'), []);
+});
+
+test('blocked by macOS privacy rules: the message names the node that needs Full Disk Access', () => {
+  const sb = sandbox();
+  const link = path.join(sb.dir, 'node-link');
+  fs.symlinkSync(process.execPath, link);
+  const eperm = () => { throw Object.assign(new Error('EPERM: operation not permitted, open'), { code: 'EPERM' }); };
+  const r = sb.run([], { checkAccess: eperm, nodePath: link });
+  assert.equal(r.code, 1);
+  assert.equal(r.stderr, [
+    'backup-shortcuts: macOS blocked access to ~/Library/Shortcuts (operation not permitted).',
+    'Give node Full Disk Access once: System Settings → Privacy & Security → Full Disk Access →',
+    `click + → press ⌘⇧G → paste ${fs.realpathSync(process.execPath)} → Open, and make sure its switch is on.`,
+    'Started it from Terminal? Then Terminal needs Full Disk Access instead.',
+    'After a Homebrew upgrade of node, macOS forgets this; do it again with the new path.',
+    '',
+  ].join('\n'));
+  assert.equal(fs.existsSync(sb.to), false);
+});
+
+test("other read errors, EACCES included, say the library can't be read", () => {
+  const sb = sandbox();
+  const eacces = () => { throw Object.assign(new Error("EACCES: permission denied, open 'x'"), { code: 'EACCES' }); };
+  const r = sb.run([], { checkAccess: eacces });
+  assert.equal(r.code, 1);
+  assert.equal(r.stderr, "backup-shortcuts: can't read ~/Library/Shortcuts/Shortcuts.sqlite: EACCES: permission denied, open 'x'\n");
+});
+
+test('sqlite3 missing, the copy failing or the check failing: exit 1, nothing replaced or removed', () => {
+  const cases = [
+    { opts: { tools: ['shortcuts'] }, env: {}, message: 'sqlite3 not found. It ships with macOS at /usr/bin/sqlite3; check PATH.' },
+    { opts: {}, env: { FAKE_SQLITE: 'fail-copy' }, message: "sqlite3 couldn't copy the library: Error: disk I/O error" },
+    {
+      opts: {}, env: { FAKE_CHECK: '*** in database main ***\nPage 7: btreeInitPage() returns error code 11' },
+      message: "the copy failed SQLite's integrity check (*** in database main ***). Nothing was replaced.",
+    },
+  ];
+  for (const c of cases) {
+    const sb = sandbox(c.opts);
+    seedBackups(sb.to);
+    const before = tree(sb.to);
+    const r = sb.run(['--daily', '1', '--weekly', '1', '--monthly', '1'], { env: c.env });
+    assert.equal(r.code, 1, c.message);
+    assert.equal(r.stderr, `backup-shortcuts: ${c.message}\n`);
+    assert.deepEqual(tree(sb.to), before);
+    assert.deepEqual(fs.readdirSync(sb.tmp), []);
+  }
+});
+
+test("a backup folder that can't be created: exit 1 naming the folder and the error", () => {
+  const sb = sandbox();
+  const file = path.join(sb.dir, 'a-file');
+  fs.writeFileSync(file, '');
+  const to = path.join(file, 'Shortcuts');
+  const r = sb.run(['--to', to]);
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.startsWith(`backup-shortcuts: can't write to ${to}: ENOTDIR`), r.stderr);
+  assert.deepEqual(fs.readdirSync(sb.tmp), []);
+});
+
+test("a failure after today's backup is saved removes nothing", () => {
+  const sb = sandbox();
+  seedBackups(sb.to);
+  fs.writeFileSync(path.join(sb.to, 'weekly', '2026-11-06'), 'a file in the way'); // the weekly rename fails
+  const r = sb.run(['--daily', '1']);
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.startsWith("backup-shortcuts: can't write to ~/Documents/Backups/Shortcuts: "), r.stderr);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'daily')).sort(), ['2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-06']);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'weekly')).sort(), ['2026-10-26', '2026-11-06']); // no .incoming-* left
+});
+
+test('shortcuts list failing only warns: the backup is saved without the names file', () => {
+  const sb = sandbox();
+  const r = sb.run([], { env: { FAKE_SHORTCUTS: 'fail' } });
+  assert.equal(r.code, 0);
+  assert.equal(r.stderr, "backup-shortcuts: warning: couldn't list shortcut names (Error: The operation couldn’t be completed.); the backup is saved without shortcut-names.txt\n");
+  assert.match(r.stdout, /^Backed up your Shortcuts library \(1 KB\) to ~\/Documents\/Backups\/Shortcuts\/daily\/2026-11-06$/m);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'daily/2026-11-06')), ['Shortcuts.sqlite.gz']);
+});
+
+test('shortcuts list hanging only warns, once its time limit passes', () => { // Review Focus 5
+  const sb = sandbox();
+  const r = sb.run([], { env: { FAKE_SHORTCUTS: 'hang' }, timeouts: { copy: 300000, names: 500 } });
+  assert.equal(r.code, 0);
+  assert.equal(r.stderr, "backup-shortcuts: warning: couldn't list shortcut names (timed out); the backup is saved without shortcut-names.txt\n");
+});
+
+test('leftovers from a crashed run are removed after an hour; recent ones are kept', () => {
+  const sb = sandbox();
+  const old = new Date(Date.now() - 2 * 3600 * 1000);
+  for (const p of ['daily/.incoming-old', 'weekly/.replaced-old', 'monthly/.incoming-old']) {
+    fs.mkdirSync(path.join(sb.to, p), { recursive: true });
+    fs.utimesSync(path.join(sb.to, p), old, old);
+  }
+  fs.mkdirSync(path.join(sb.to, 'daily/.incoming-recent'));
+  assert.equal(sb.run([]).code, 0);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'daily')).sort(), ['.incoming-recent', '2026-11-06']);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'weekly')), ['2026-11-06']);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'monthly')), ['2026-11-06']);
 });

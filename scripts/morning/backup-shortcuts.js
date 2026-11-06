@@ -153,6 +153,11 @@ function summaryLines({ count, size, folder, replaced, weekly, monthly, removed 
 
 // ---- The run ------------------------------------------------------------------------------
 
+// A problem the person can fix; main prints its message and exits 1.
+class Failure extends Error {}
+
+const LEFTOVER_MS = 60 * 60 * 1000;
+
 function withDefaults(ctx) {
   return {
     env: process.env,
@@ -185,64 +190,158 @@ function listFolders(dir) {
 }
 
 // A private staging folder inside dir, renamed into place once it is complete.
-function stage(dir) {
+function stage(dir, staged) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return fs.mkdtempSync(path.join(dir, '.incoming-'));
+  const folder = fs.mkdtempSync(path.join(dir, '.incoming-'));
+  staged.push(folder);
+  return folder;
 }
 
-// Copies, checks and saves today's backup, promotes it, prunes, and returns what summaryLines
-// reports. Nothing is pruned unless every earlier step succeeded.
+const firstLine = (text) => String(text || '').split('\n').map((line) => line.trim()).find(Boolean);
+
+// Why a tool run failed, in a few words.
+function failureReason(result) {
+  if (result.error && result.error.code === 'ETIMEDOUT') return 'timed out';
+  if (result.error) return result.error.message;
+  return firstLine(result.stderr) || (result.signal ? `killed by ${result.signal}` : `exit ${result.status}`);
+}
+
+function fullDiskAccessMessage(ctx, folder) {
+  let node = ctx.nodePath;
+  try {
+    node = fs.realpathSync(ctx.nodePath);
+  } catch {
+    // keep the path as given
+  }
+  return [
+    `macOS blocked access to ${folder} (operation not permitted).`,
+    'Give node Full Disk Access once: System Settings → Privacy & Security → Full Disk Access →',
+    `click + → press ⌘⇧G → paste ${node} → Open, and make sure its switch is on.`,
+    'Started it from Terminal? Then Terminal needs Full Disk Access instead.',
+    'After a Homebrew upgrade of node, macOS forgets this; do it again with the new path.',
+  ].join('\n');
+}
+
+// Step 1: can we read the library at all? Runs before anything touches the backup folder.
+function checkLibrary(library, ctx, home) {
+  try {
+    ctx.checkAccess(library);
+  } catch (e) {
+    if (e.code === 'ENOENT') throw new Failure(`no Shortcuts library at ${tildePath(library, home)}. Open the Shortcuts app once, then try again.`);
+    if (e.code === 'EPERM') throw new Failure(fullDiskAccessMessage(ctx, tildePath(path.dirname(library), home)));
+    throw new Failure(`can't read ${tildePath(library, home)}: ${e.message}`);
+  }
+}
+
+// Step 2: staging folders left by a run that crashed, once they are an hour old. File times are
+// real-clock values, so this uses the real clock, not ctx.now(). Best effort.
+function tidy(to) {
+  const cutoff = Date.now() - LEFTOVER_MS;
+  for (const kind of KINDS) {
+    const dir = path.join(to, kind);
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^\.(incoming|replaced)-/.test(entry.name)) continue;
+      const abs = path.join(dir, entry.name);
+      try {
+        if (fs.statSync(abs).mtimeMs < cutoff) fs.rmSync(abs, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  }
+}
+
+// Steps 3-5: a checked copy of the library in temp, and the shortcut names (null if unavailable).
+function snapshot(library, temp, ctx) {
+  const copy = path.join(temp, 'Shortcuts.sqlite');
+  const copied = runTool(ctx, 'sqlite3', ['-readonly', '-cmd', '.timeout 10000', library, `.backup ${dotQuote(copy)}`], ctx.timeouts.copy);
+  if (copied.error && copied.error.code === 'ENOENT') throw new Failure('sqlite3 not found. It ships with macOS at /usr/bin/sqlite3; check PATH.');
+  if (copied.error || copied.status !== 0) throw new Failure(`sqlite3 couldn't copy the library: ${failureReason(copied)}`);
+
+  const checked = runTool(ctx, 'sqlite3', ['-readonly', copy, 'PRAGMA quick_check;'], ctx.timeouts.copy);
+  if (checked.error || checked.status !== 0 || checked.stdout.trim() !== 'ok') {
+    const detail = firstLine(checked.stdout) || firstLine(checked.stderr) || failureReason(checked);
+    throw new Failure(`the copy failed SQLite's integrity check (${detail}). Nothing was replaced.`);
+  }
+
+  const listed = runTool(ctx, 'shortcuts', ['list'], ctx.timeouts.names);
+  if (!listed.error && listed.status === 0) return { copy, names: parseNames(listed.stdout) };
+  const why = listed.error && listed.error.code === 'ENOENT' ? 'shortcuts not found' : failureReason(listed);
+  ctx.stderr.write(`backup-shortcuts: warning: couldn't list shortcut names (${why}); the backup is saved without ${NAMES_FILE}\n`);
+  return { copy, names: null };
+}
+
+// Steps 6-8: save today's daily backup, promote it, prune. Nothing is pruned unless saving and
+// promoting succeeded; a failure removes this run's staging folders and leaves the rest alone.
+function store(opts, today, copy, names, staged) {
+  const existing = {};
+  for (const kind of KINDS) existing[kind] = listFolders(path.join(opts.to, kind));
+  const plan = planRotation({ today, existing, keep: opts.keep });
+
+  const dailyDir = path.join(opts.to, 'daily');
+  const incoming = stage(dailyDir, staged);
+  fs.writeFileSync(path.join(incoming, ARCHIVE), zlib.gzipSync(fs.readFileSync(copy)), { mode: 0o600 });
+  if (names) fs.writeFileSync(path.join(incoming, NAMES_FILE), names.length > 0 ? `${names.join('\n')}\n` : '', { mode: 0o600 });
+  const saved = path.join(dailyDir, today);
+  if (plan.replaceDaily) {
+    const aside = path.join(dailyDir, `.replaced-${crypto.randomBytes(4).toString('hex')}`);
+    fs.renameSync(saved, aside);
+    try {
+      fs.renameSync(incoming, saved);
+    } catch (e) {
+      fs.renameSync(aside, saved); // put today's earlier backup back
+      throw e;
+    }
+    fs.rmSync(aside, { recursive: true, force: true });
+  } else {
+    fs.renameSync(incoming, saved);
+  }
+
+  for (const kind of ['weekly', 'monthly']) {
+    if (!plan[kind]) continue;
+    const dir = path.join(opts.to, kind);
+    const promoting = stage(dir, staged);
+    for (const name of fs.readdirSync(saved)) {
+      fs.copyFileSync(path.join(saved, name), path.join(promoting, name), fs.constants.COPYFILE_FICLONE);
+    }
+    fs.renameSync(promoting, path.join(dir, today));
+  }
+
+  const removed = [];
+  for (const kind of KINDS) {
+    for (const date of plan.prune[kind]) {
+      fs.rmSync(path.join(opts.to, kind, date), { recursive: true, force: true });
+      removed.push(`${kind}/${date}`);
+    }
+  }
+  return { saved, plan, removed };
+}
+
+// One backup run (spec §5.2). Returns what summaryLines reports.
 function backup(opts, ctx, home) {
   const library = path.join(home, 'Library', 'Shortcuts', 'Shortcuts.sqlite');
   const today = localDate(ctx.now());
-  ctx.checkAccess(library);
+  checkLibrary(library, ctx, home);
+  tidy(opts.to);
 
   const temp = fs.mkdtempSync(path.join(ctx.tmpDir, 'backup-shortcuts-'));
   try {
-    const copy = path.join(temp, 'Shortcuts.sqlite');
-    const copied = runTool(ctx, 'sqlite3', ['-readonly', '-cmd', '.timeout 10000', library, `.backup ${dotQuote(copy)}`], ctx.timeouts.copy);
-    if (copied.error || copied.status !== 0) throw new Error("sqlite3 couldn't copy the library");
-    const checked = runTool(ctx, 'sqlite3', ['-readonly', copy, 'PRAGMA quick_check;'], ctx.timeouts.copy);
-    if (checked.error || checked.status !== 0 || checked.stdout.trim() !== 'ok') throw new Error("the copy failed SQLite's integrity check");
-    const listed = runTool(ctx, 'shortcuts', ['list'], ctx.timeouts.names);
-    const names = !listed.error && listed.status === 0 ? parseNames(listed.stdout) : null;
-
-    const existing = {};
-    for (const kind of KINDS) existing[kind] = listFolders(path.join(opts.to, kind));
-    const plan = planRotation({ today, existing, keep: opts.keep });
-
-    const dailyDir = path.join(opts.to, 'daily');
-    const incoming = stage(dailyDir);
-    fs.writeFileSync(path.join(incoming, ARCHIVE), zlib.gzipSync(fs.readFileSync(copy)), { mode: 0o600 });
-    if (names) fs.writeFileSync(path.join(incoming, NAMES_FILE), names.length > 0 ? `${names.join('\n')}\n` : '', { mode: 0o600 });
-    const saved = path.join(dailyDir, today);
-    if (plan.replaceDaily) {
-      const aside = path.join(dailyDir, `.replaced-${crypto.randomBytes(4).toString('hex')}`);
-      fs.renameSync(saved, aside);
-      fs.renameSync(incoming, saved);
-      fs.rmSync(aside, { recursive: true, force: true });
-    } else {
-      fs.renameSync(incoming, saved);
+    const { copy, names } = snapshot(library, temp, ctx);
+    const staged = [];
+    let stored;
+    try {
+      stored = store(opts, today, copy, names, staged);
+    } catch (e) {
+      for (const folder of staged) fs.rmSync(folder, { recursive: true, force: true });
+      throw new Failure(`can't write to ${tildePath(opts.to, home)}: ${e.message}`);
     }
-
-    for (const kind of ['weekly', 'monthly']) {
-      if (!plan[kind]) continue;
-      const dir = path.join(opts.to, kind);
-      const promoting = stage(dir);
-      for (const name of fs.readdirSync(saved)) {
-        fs.copyFileSync(path.join(saved, name), path.join(promoting, name), fs.constants.COPYFILE_FICLONE);
-      }
-      fs.renameSync(promoting, path.join(dir, today));
-    }
-
-    const removed = [];
-    for (const kind of KINDS) {
-      for (const date of plan.prune[kind]) {
-        fs.rmSync(path.join(opts.to, kind, date), { recursive: true, force: true });
-        removed.push(`${kind}/${date}`);
-      }
-    }
-
+    const { saved, plan, removed } = stored;
     return {
       count: names ? names.length : null,
       size: formatSize(fs.statSync(path.join(saved, ARCHIVE)).size),
@@ -272,6 +371,10 @@ function main(argv, ctx = {}) {
     if (e instanceof UsageError) {
       c.stderr.write(`backup-shortcuts: ${e.message}\n${USAGE.split('\n')[0]}\n`);
       return 2;
+    }
+    if (e instanceof Failure) {
+      c.stderr.write(`backup-shortcuts: ${e.message}\n`);
+      return 1;
     }
     c.stderr.write(`backup-shortcuts: unexpected error: ${e.message}\n`);
     return 1;
