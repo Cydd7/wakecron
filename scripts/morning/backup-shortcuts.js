@@ -257,14 +257,18 @@ function tidy(to) {
   }
 }
 
+// sqlite3 would otherwise first run the person's ~/.sqliterc, and settings like `.headers on`
+// change what the check prints.
+const NO_STARTUP_FILE = ['-init', '/dev/null'];
+
 // Steps 3-5: a checked copy of the library in temp, and the shortcut names (null if unavailable).
 function snapshot(library, temp, ctx) {
   const copy = path.join(temp, 'Shortcuts.sqlite');
-  const copied = runTool(ctx, 'sqlite3', ['-readonly', '-cmd', '.timeout 10000', library, `.backup ${dotQuote(copy)}`], ctx.timeouts.copy);
+  const copied = runTool(ctx, 'sqlite3', [...NO_STARTUP_FILE, '-readonly', '-cmd', '.timeout 10000', library, `.backup ${dotQuote(copy)}`], ctx.timeouts.copy);
   if (copied.error && copied.error.code === 'ENOENT') throw new Failure('sqlite3 not found. It ships with macOS at /usr/bin/sqlite3; check PATH.');
   if (copied.error || copied.status !== 0) throw new Failure(`sqlite3 couldn't copy the library: ${failureReason(copied)}`);
 
-  const checked = runTool(ctx, 'sqlite3', ['-readonly', copy, 'PRAGMA quick_check;'], ctx.timeouts.copy);
+  const checked = runTool(ctx, 'sqlite3', [...NO_STARTUP_FILE, '-readonly', copy, 'PRAGMA quick_check;'], ctx.timeouts.copy);
   if (checked.error || checked.status !== 0 || checked.stdout.trim() !== 'ok') {
     const detail = firstLine(checked.stdout) || firstLine(checked.stderr) || failureReason(checked);
     throw new Failure(`the copy failed SQLite's integrity check (${detail}). Nothing was replaced.`);

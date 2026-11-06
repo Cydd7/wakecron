@@ -103,19 +103,19 @@ function seedBackups(to) {
 
 // The real sqlite3, for tests that need SQLite's own behaviour.
 function sqlite(db, sql) {
-  const r = spawnSync('sqlite3', [db, sql], { encoding: 'utf8' });
+  const r = spawnSync('sqlite3', ['-init', '/dev/null', db, sql], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout;
 }
 
 // Keeps a real sqlite3 connection open on db after running sql in it, like the Shortcuts app does.
 async function holdOpen(db, sql) {
-  const child = spawn('sqlite3', [db], { stdio: ['pipe', 'ignore', 'inherit'] });
+  const child = spawn('sqlite3', ['-init', '/dev/null', db], { stdio: ['pipe', 'ignore', 'inherit'] });
   child.stdin.write(`${sql}\n`);
   const closed = new Promise((resolve) => child.on('close', resolve));
   const deadline = Date.now() + 5000;
   for (;;) {
-    const r = spawnSync('sqlite3', ['-readonly', db, 'SELECT count(*) FROM ZSHORTCUT;'], { encoding: 'utf8' });
+    const r = spawnSync('sqlite3', ['-init', '/dev/null', '-readonly', db, 'SELECT count(*) FROM ZSHORTCUT;'], { encoding: 'utf8' });
     if (r.stdout.trim() === '3') break;
     if (Date.now() > deadline) throw new Error(`holdOpen: the rows never appeared (${r.stdout}${r.stderr})`);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -343,10 +343,10 @@ test('sqlite3 copies the library read-only with a busy timeout, then checks the 
   const sb = sandbox();
   sb.run([]);
   const [copy, check] = sb.calls('sqlite3');
-  assert.deepEqual(copy.slice(0, 4), ['-readonly', '-cmd', '.timeout 10000', sb.library]);
-  assert.ok(copy[4].startsWith(`.backup "${sb.tmp}/backup-shortcuts-`), copy[4]);
-  assert.ok(copy[4].endsWith('/Shortcuts.sqlite"'), copy[4]);
-  assert.deepEqual(check, ['-readonly', copy[4].slice(9, -1), 'PRAGMA quick_check;']);
+  assert.deepEqual(copy.slice(0, 6), ['-init', '/dev/null', '-readonly', '-cmd', '.timeout 10000', sb.library]);
+  assert.ok(copy[6].startsWith(`.backup "${sb.tmp}/backup-shortcuts-`), copy[6]);
+  assert.ok(copy[6].endsWith('/Shortcuts.sqlite"'), copy[6]);
+  assert.deepEqual(check, ['-init', '/dev/null', '-readonly', copy[6].slice(9, -1), 'PRAGMA quick_check;']);
   assert.deepEqual(sb.calls('shortcuts'), [['list']]);
   assert.deepEqual(fs.readdirSync(sb.tmp), []); // the temporary copy is gone
 });
@@ -422,6 +422,18 @@ test('backs up a library another program has open, changes not yet checkpointed 
       await holder.close();
     }
   });
+
+test("a sqlite3 startup file (~/.sqliterc) doesn't break the backup", { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, () => {
+  const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
+  fs.mkdirSync(path.dirname(sb.library), { recursive: true });
+  sqlite(sb.library, "CREATE TABLE ZSHORTCUT (ZNAME TEXT); INSERT INTO ZSHORTCUT VALUES ('A');");
+  const config = path.join(sb.dir, 'config'); // sqlite3 reads $XDG_CONFIG_HOME/sqlite3/sqliterc like ~/.sqliterc
+  fs.mkdirSync(path.join(config, 'sqlite3'), { recursive: true });
+  fs.writeFileSync(path.join(config, 'sqlite3', 'sqliterc'), '.headers on\n.mode column\n.echo on\n');
+  const r = sb.run([], { env: { XDG_CONFIG_HOME: config } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(fs.existsSync(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz')));
+});
 
 test('works when the temp and backup folders have spaces, quotes and a backslash in their paths', // Review Focus 1
   { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, () => {

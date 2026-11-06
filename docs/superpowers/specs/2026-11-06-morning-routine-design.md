@@ -179,11 +179,13 @@ node morning/backup-shortcuts.js [--to DIR] [--daily N] [--weekly N] [--monthly 
    `monthly/` when they were last modified more than one hour ago. Such folders are left behind
    when a run crashes. This is best effort: errors here are ignored.
 3. **Copy.** In a new private temporary folder under `os.tmpdir()`, run
-   `sqlite3 -readonly -cmd ".timeout 10000" <library> ".backup <temp>/Shortcuts.sqlite"`.
+   `sqlite3 -init /dev/null -readonly -cmd ".timeout 10000" <library> ".backup <temp>/Shortcuts.sqlite"`.
+   - `-init /dev/null` stops sqlite3 from first running the person's `~/.sqliterc`, whose settings
+     (such as `.headers on`) would change what the check prints.
    - Because the library is opened read-only, the copy never writes to it and never checkpoints it.
    - The copy is a consistent snapshot, including changes still in the WAL file.
    - The copy has a 5-minute time limit.
-4. **Check.** `sqlite3 -readonly <copy> "PRAGMA quick_check;"` must print exactly `ok`. The check
+4. **Check.** `sqlite3 -init /dev/null -readonly <copy> "PRAGMA quick_check;"` must print exactly `ok`. The check
    has the same 5-minute limit.
 5. **Names.** Run `shortcuts list` with a 60-second limit. Drop blank lines from its output, sort
    the rest without regard to case, and save them one per line as `shortcut-names.txt`. If the
