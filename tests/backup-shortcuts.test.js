@@ -1,10 +1,119 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const zlib = require('node:zlib');
+const crypto = require('node:crypto');
+const { spawn, spawnSync } = require('node:child_process');
 const {
   localDate, mondayOf, planRotation,
-  parseOptions, parseNames, formatSize, tildePath, summaryLines,
+  USAGE, parseOptions, parseNames, formatSize, tildePath, summaryLines,
+  main,
 } = require('../scripts/morning/backup-shortcuts');
+
+// ---- Helpers --------------------------------------------------------------------------------
+
+const FAKE_TOOLS = path.join(__dirname, 'fakes', 'backup-tools.js');
+const FRI_7AM = new Date(2026, 10, 6, 7, 0);
+const NAMES = 'Morning Weather\nbackup notes\nZoom Link\n';
+const HAS_SQLITE = spawnSync('sqlite3', ['-version']).status === 0;
+const SQLITE_DIR = HAS_SQLITE ? path.dirname(spawnSync('sh', ['-c', 'command -v sqlite3'], { encoding: 'utf8' }).stdout.trim()) : null;
+
+const sandboxes = [];
+process.on('exit', () => {
+  for (const dir of sandboxes) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const capture = () => ({ text: '', write(chunk) { this.text += chunk; } });
+
+// A throwaway HOME with a Shortcuts library, a bin/ of stand-in tools and a private temp folder.
+function sandbox({ library = 'library v1', tools = ['sqlite3', 'shortcuts'], realSqlite = false } = {}) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'backup-test-')));
+  sandboxes.push(dir);
+  const home = path.join(dir, 'home');
+  const bin = path.join(dir, 'bin');
+  const tmp = path.join(dir, 'tmp');
+  for (const d of [home, bin, tmp]) fs.mkdirSync(d);
+  const libraryPath = path.join(home, 'Library', 'Shortcuts', 'Shortcuts.sqlite');
+  if (typeof library === 'string') {
+    fs.mkdirSync(path.dirname(libraryPath), { recursive: true });
+    fs.writeFileSync(libraryPath, library);
+  }
+  for (const tool of tools) {
+    fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_TOOLS}" ${tool} "$@"\n`, { mode: 0o755 });
+  }
+  const log = path.join(dir, 'calls.jsonl');
+  const env = { PATH: realSqlite ? `${bin}:${SQLITE_DIR}` : bin, HOME: home, FAKE_LOG: log, FAKE_NAMES: NAMES };
+  return {
+    dir, home, bin, tmp, to: path.join(home, 'Documents', 'Backups', 'Shortcuts'), library: libraryPath, log, env,
+    run(argv = [], { env: extra = {}, now = FRI_7AM, ...rest } = {}) {
+      const stdout = capture();
+      const stderr = capture();
+      const code = main(argv, { env: { ...env, ...extra }, now: () => now, stdout, stderr, tmpDir: tmp, ...rest });
+      return { code, stdout: stdout.text, stderr: stderr.text };
+    },
+    calls(tool) {
+      let lines;
+      try {
+        lines = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean);
+      } catch {
+        return [];
+      }
+      return lines.map((line) => JSON.parse(line)).filter(([t]) => t === tool).map(([, ...args]) => args);
+    },
+  };
+}
+
+const gunzip = (file) => zlib.gunzipSync(fs.readFileSync(file)).toString();
+
+// Every path below root mapped to 'dir' or to the file's contents ({} when root is missing).
+function tree(root) {
+  const found = {};
+  const walk = (dir, prefix) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        found[rel] = 'dir';
+        walk(abs, rel);
+      } else {
+        found[rel] = fs.readFileSync(abs, 'utf8');
+      }
+    }
+  };
+  walk(root, '');
+  return found;
+}
+
+// The real sqlite3, for tests that need SQLite's own behaviour.
+function sqlite(db, sql) {
+  const r = spawnSync('sqlite3', [db, sql], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout;
+}
+
+// Keeps a real sqlite3 connection open on db after running sql in it, like the Shortcuts app does.
+async function holdOpen(db, sql) {
+  const child = spawn('sqlite3', [db], { stdio: ['pipe', 'ignore', 'inherit'] });
+  child.stdin.write(`${sql}\n`);
+  const closed = new Promise((resolve) => child.on('close', resolve));
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const r = spawnSync('sqlite3', ['-readonly', db, 'SELECT count(*) FROM ZSHORTCUT;'], { encoding: 'utf8' });
+    if (r.stdout.trim() === '3') break;
+    if (Date.now() > deadline) throw new Error(`holdOpen: the rows never appeared (${r.stdout}${r.stderr})`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return { close: () => { child.stdin.end(); return closed; } };
+}
 
 const KEEP = { daily: 7, weekly: 4, monthly: 12 };
 const none = { daily: [], weekly: [], monthly: [] };
@@ -192,4 +301,152 @@ test('the summary reports what was backed up, promoted and removed', () => {
     ['Backed up 87 shortcuts (1.4 MB) to ~/Documents/Backups/Shortcuts/daily/2026-11-06']);
   assert.equal(summaryLines({ ...base, removed: ['daily/2026-10-29', 'weekly/2026-10-05'] })[2],
     'Removed 2 old backups: daily/2026-10-29, weekly/2026-10-05');
+});
+
+// ---- The backup run -------------------------------------------------------------------------
+
+test('the first run backs up the library into daily, weekly and monthly', () => {
+  const sb = sandbox();
+  const r = sb.run([]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stderr, '');
+  assert.equal(r.stdout, "Backed up 3 shortcuts (1 KB) to ~/Documents/Backups/Shortcuts/daily/2026-11-06\nAlso this week's and this month's backup.\n");
+  for (const kind of ['daily', 'weekly', 'monthly']) {
+    const dir = path.join(sb.to, kind, '2026-11-06');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['Shortcuts.sqlite.gz', 'shortcut-names.txt']);
+    assert.equal(gunzip(path.join(dir, 'Shortcuts.sqlite.gz')), 'library v1');
+    assert.equal(fs.readFileSync(path.join(dir, 'shortcut-names.txt'), 'utf8'), 'backup notes\nMorning Weather\nZoom Link\n');
+  }
+});
+
+test('backups are private: folders 0700, files 0600', () => {
+  const sb = sandbox();
+  sb.run([]);
+  const mode = (p) => fs.statSync(p).mode & 0o777;
+  assert.equal(mode(sb.to), 0o700);
+  for (const kind of ['daily', 'weekly', 'monthly']) {
+    assert.equal(mode(path.join(sb.to, kind)), 0o700);
+    assert.equal(mode(path.join(sb.to, kind, '2026-11-06')), 0o700);
+    for (const f of ['Shortcuts.sqlite.gz', 'shortcut-names.txt']) assert.equal(mode(path.join(sb.to, kind, '2026-11-06', f)), 0o600);
+  }
+});
+
+test('sqlite3 copies the library read-only with a busy timeout, then checks the copy', () => {
+  const sb = sandbox();
+  sb.run([]);
+  const [copy, check] = sb.calls('sqlite3');
+  assert.deepEqual(copy.slice(0, 4), ['-readonly', '-cmd', '.timeout 10000', sb.library]);
+  assert.ok(copy[4].startsWith(`.backup "${sb.tmp}/backup-shortcuts-`), copy[4]);
+  assert.ok(copy[4].endsWith('/Shortcuts.sqlite"'), copy[4]);
+  assert.deepEqual(check, ['-readonly', copy[4].slice(9, -1), 'PRAGMA quick_check;']);
+  assert.deepEqual(sb.calls('shortcuts'), [['list']]);
+  assert.deepEqual(fs.readdirSync(sb.tmp), []); // the temporary copy is gone
+});
+
+test('a later day in the same week makes only a daily backup', () => {
+  const sb = sandbox();
+  sb.run([]);
+  const r = sb.run([], { now: new Date(2026, 10, 7, 7, 0) });
+  assert.equal(r.stdout, 'Backed up 3 shortcuts (1 KB) to ~/Documents/Backups/Shortcuts/daily/2026-11-07\n');
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'weekly')), ['2026-11-06']);
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'monthly')), ['2026-11-06']);
+});
+
+test("a second run the same day replaces that day's backup; this week's and month's keep the first", () => { // Review Focus 3
+  const sb = sandbox();
+  sb.run([]);
+  fs.writeFileSync(sb.library, 'library v2');
+  const r = sb.run([], { now: new Date(2026, 10, 6, 9, 30) });
+  assert.equal(r.stdout, "Backed up 3 shortcuts (1 KB) to ~/Documents/Backups/Shortcuts/daily/2026-11-06 (replaced today's earlier backup)\n");
+  assert.equal(gunzip(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz')), 'library v2');
+  for (const kind of ['weekly', 'monthly']) assert.equal(gunzip(path.join(sb.to, kind, '2026-11-06/Shortcuts.sqlite.gz')), 'library v1');
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'daily')), ['2026-11-06']); // no .replaced-* left
+});
+
+test('six weeks of mornings keep the newest 7 daily and 4 weekly backups', () => {
+  const sb = sandbox();
+  for (let i = 0; i < 42; i += 1) {
+    const r = sb.run([], { now: new Date(2026, 10, 6 + i, 7, 0) });
+    assert.equal(r.code, 0, r.stderr);
+    if (i === 7) assert.match(r.stdout, /^Removed 1 old backup: daily\/2026-11-06$/m);
+  }
+  const list = (kind) => fs.readdirSync(path.join(sb.to, kind)).sort();
+  assert.deepEqual(list('daily'), ['2026-12-11', '2026-12-12', '2026-12-13', '2026-12-14', '2026-12-15', '2026-12-16', '2026-12-17']);
+  assert.deepEqual(list('weekly'), ['2026-11-23', '2026-11-30', '2026-12-07', '2026-12-14']);
+  assert.deepEqual(list('monthly'), ['2026-11-06', '2026-12-01']);
+});
+
+test("never counts or deletes things it didn't create", () => { // Review Focus 4
+  const sb = sandbox();
+  const daily = path.join(sb.to, 'daily');
+  for (const d of ['2026-10-29', '2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']) {
+    fs.mkdirSync(path.join(daily, d), { recursive: true });
+  }
+  fs.mkdirSync(path.join(daily, 'notes'));
+  fs.mkdirSync(path.join(daily, '2026-11-01-old'));
+  fs.writeFileSync(path.join(daily, '2026-10-01'), 'a file, not a backup');
+  fs.mkdirSync(path.join(sb.to, 'before-restore-20261101-120000'));
+  const r = sb.run([]);
+  assert.match(r.stdout, /^Removed 2 old backups: daily\/2026-10-29, daily\/2026-10-30$/m);
+  assert.deepEqual(fs.readdirSync(daily).sort(),
+    ['2026-10-01', '2026-10-31', '2026-11-01', '2026-11-01-old', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', 'notes']);
+  assert.ok(fs.existsSync(path.join(sb.to, 'before-restore-20261101-120000')));
+});
+
+test('backs up a library another program has open, changes not yet checkpointed included, without writing to it',
+  { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, async () => {
+    const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
+    fs.mkdirSync(path.dirname(sb.library), { recursive: true });
+    sqlite(sb.library, "PRAGMA journal_mode=WAL; CREATE TABLE ZSHORTCUT (Z_PK INTEGER PRIMARY KEY, ZNAME TEXT); INSERT INTO ZSHORTCUT (ZNAME) VALUES ('Morning'), ('Evening');");
+    const holder = await holdOpen(sb.library, "PRAGMA wal_autocheckpoint=0; INSERT INTO ZSHORTCUT (ZNAME) VALUES ('Unflushed');");
+    try {
+      assert.ok(fs.statSync(`${sb.library}-wal`).size > 0);
+      const before = crypto.createHash('sha256').update(fs.readFileSync(sb.library)).digest('hex');
+      const r = sb.run([]);
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(crypto.createHash('sha256').update(fs.readFileSync(sb.library)).digest('hex'), before);
+      const copy = path.join(sb.dir, 'unpacked.sqlite');
+      fs.writeFileSync(copy, zlib.gunzipSync(fs.readFileSync(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz'))));
+      assert.equal(sqlite(copy, 'PRAGMA quick_check;'), 'ok\n');
+      assert.equal(sqlite(copy, 'SELECT ZNAME FROM ZSHORTCUT ORDER BY Z_PK;'), 'Morning\nEvening\nUnflushed\n');
+      assert.deepEqual(fs.readdirSync(sb.tmp), []);
+    } finally {
+      await holder.close();
+    }
+  });
+
+test('works when the temp and backup folders have spaces, quotes and a backslash in their paths', // Review Focus 1
+  { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, () => {
+    const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
+    fs.mkdirSync(path.dirname(sb.library), { recursive: true });
+    sqlite(sb.library, "CREATE TABLE ZSHORTCUT (ZNAME TEXT); INSERT INTO ZSHORTCUT VALUES ('A');");
+    const tmp = path.join(sb.dir, 'tmp "quoted" \\ dir');
+    fs.mkdirSync(tmp);
+    const to = path.join(sb.home, 'My "Backups"', 'Shortcuts');
+    const r = sb.run(['--to', to], { tmpDir: tmp });
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(fs.existsSync(path.join(to, 'daily/2026-11-06/Shortcuts.sqlite.gz')));
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  });
+
+const SCRIPT = path.join(__dirname, '..', 'scripts', 'morning', 'backup-shortcuts.js');
+
+test('as a command: --help prints the usage and exits 0', () => {
+  const r = spawnSync(process.execPath, [SCRIPT, '--help'], { encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, `${USAGE}\n`);
+});
+
+test('as a command: bad options exit 2 with the problem and the usage line', () => {
+  const r = spawnSync(process.execPath, [SCRIPT, '--daily', '0'], { encoding: 'utf8' });
+  assert.equal(r.status, 2);
+  assert.equal(r.stderr, `backup-shortcuts: --daily must be a whole number from 1 to 999 (got "0")\n${USAGE.split('\n')[0]}\n`);
+});
+
+test('as a command: a backup into the default folder exits 0', () => {
+  const sb = sandbox();
+  const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8', env: { ...sb.env, TMPDIR: sb.tmp } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Backed up 3 shortcuts \(1 KB\) to ~\/Documents\/Backups\/Shortcuts\/daily\/\d{4}-\d{2}-\d{2}$/m);
+  assert.deepEqual(fs.readdirSync(sb.tmp), []);
 });

@@ -3,10 +3,17 @@
 // Backs up the Apple Shortcuts library into daily, weekly and monthly copies.
 // A step of scripts/morning.sh. Design: docs/superpowers/specs/2026-11-06-morning-routine-design.md
 
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
+const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 
 const KINDS = ['daily', 'weekly', 'monthly'];
 const DATED = /^\d{4}-\d{2}-\d{2}$/;
+const ARCHIVE = 'Shortcuts.sqlite.gz';
+const NAMES_FILE = 'shortcut-names.txt';
 
 // ---- Dates (pure) -------------------------------------------------------------------------
 
@@ -144,7 +151,137 @@ function summaryLines({ count, size, folder, replaced, weekly, monthly, removed 
   return lines;
 }
 
+// ---- The run ------------------------------------------------------------------------------
+
+function withDefaults(ctx) {
+  return {
+    env: process.env,
+    now: () => new Date(),
+    stdout: process.stdout,
+    stderr: process.stderr,
+    checkAccess: (file) => fs.closeSync(fs.openSync(file, 'r')),
+    nodePath: process.execPath,
+    tmpDir: os.tmpdir(),
+    timeouts: { copy: 300000, names: 60000 },
+    ...ctx,
+  };
+}
+
+function runTool(ctx, tool, args, timeout) {
+  return spawnSync(tool, args, { env: ctx.env, encoding: 'utf8', timeout, maxBuffer: 64 * 1024 * 1024 });
+}
+
+// A path as one argument of a sqlite3 dot-command: double-quoted, with \ and " escaped.
+const dotQuote = (p) => `"${p.replace(/[\\"]/g, '\\$&')}"`;
+
+// Folder names in dir (directories only); a missing dir has none.
+function listFolders(dir) {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    throw e;
+  }
+}
+
+// A private staging folder inside dir, renamed into place once it is complete.
+function stage(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return fs.mkdtempSync(path.join(dir, '.incoming-'));
+}
+
+// Copies, checks and saves today's backup, promotes it, prunes, and returns what summaryLines
+// reports. Nothing is pruned unless every earlier step succeeded.
+function backup(opts, ctx, home) {
+  const library = path.join(home, 'Library', 'Shortcuts', 'Shortcuts.sqlite');
+  const today = localDate(ctx.now());
+  ctx.checkAccess(library);
+
+  const temp = fs.mkdtempSync(path.join(ctx.tmpDir, 'backup-shortcuts-'));
+  try {
+    const copy = path.join(temp, 'Shortcuts.sqlite');
+    const copied = runTool(ctx, 'sqlite3', ['-readonly', '-cmd', '.timeout 10000', library, `.backup ${dotQuote(copy)}`], ctx.timeouts.copy);
+    if (copied.error || copied.status !== 0) throw new Error("sqlite3 couldn't copy the library");
+    const checked = runTool(ctx, 'sqlite3', ['-readonly', copy, 'PRAGMA quick_check;'], ctx.timeouts.copy);
+    if (checked.error || checked.status !== 0 || checked.stdout.trim() !== 'ok') throw new Error("the copy failed SQLite's integrity check");
+    const listed = runTool(ctx, 'shortcuts', ['list'], ctx.timeouts.names);
+    const names = !listed.error && listed.status === 0 ? parseNames(listed.stdout) : null;
+
+    const existing = {};
+    for (const kind of KINDS) existing[kind] = listFolders(path.join(opts.to, kind));
+    const plan = planRotation({ today, existing, keep: opts.keep });
+
+    const dailyDir = path.join(opts.to, 'daily');
+    const incoming = stage(dailyDir);
+    fs.writeFileSync(path.join(incoming, ARCHIVE), zlib.gzipSync(fs.readFileSync(copy)), { mode: 0o600 });
+    if (names) fs.writeFileSync(path.join(incoming, NAMES_FILE), names.length > 0 ? `${names.join('\n')}\n` : '', { mode: 0o600 });
+    const saved = path.join(dailyDir, today);
+    if (plan.replaceDaily) {
+      const aside = path.join(dailyDir, `.replaced-${crypto.randomBytes(4).toString('hex')}`);
+      fs.renameSync(saved, aside);
+      fs.renameSync(incoming, saved);
+      fs.rmSync(aside, { recursive: true, force: true });
+    } else {
+      fs.renameSync(incoming, saved);
+    }
+
+    for (const kind of ['weekly', 'monthly']) {
+      if (!plan[kind]) continue;
+      const dir = path.join(opts.to, kind);
+      const promoting = stage(dir);
+      for (const name of fs.readdirSync(saved)) {
+        fs.copyFileSync(path.join(saved, name), path.join(promoting, name), fs.constants.COPYFILE_FICLONE);
+      }
+      fs.renameSync(promoting, path.join(dir, today));
+    }
+
+    const removed = [];
+    for (const kind of KINDS) {
+      for (const date of plan.prune[kind]) {
+        fs.rmSync(path.join(opts.to, kind, date), { recursive: true, force: true });
+        removed.push(`${kind}/${date}`);
+      }
+    }
+
+    return {
+      count: names ? names.length : null,
+      size: formatSize(fs.statSync(path.join(saved, ARCHIVE)).size),
+      folder: tildePath(saved, home),
+      replaced: plan.replaceDaily,
+      weekly: plan.weekly,
+      monthly: plan.monthly,
+      removed,
+    };
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+function main(argv, ctx = {}) {
+  const c = withDefaults(ctx);
+  const home = c.env.HOME || os.homedir();
+  try {
+    const opts = parseOptions(argv, home);
+    if (opts.help) {
+      c.stdout.write(`${USAGE}\n`);
+      return 0;
+    }
+    for (const line of summaryLines(backup(opts, c, home))) c.stdout.write(`${line}\n`);
+    return 0;
+  } catch (e) {
+    if (e instanceof UsageError) {
+      c.stderr.write(`backup-shortcuts: ${e.message}\n${USAGE.split('\n')[0]}\n`);
+      return 2;
+    }
+    c.stderr.write(`backup-shortcuts: unexpected error: ${e.message}\n`);
+    return 1;
+  }
+}
+
 module.exports = {
   localDate, mondayOf, planRotation,
   USAGE, UsageError, parseOptions, parseNames, formatSize, tildePath, summaryLines,
+  main,
 };
+
+if (require.main === module) process.exitCode = main(process.argv.slice(2));
