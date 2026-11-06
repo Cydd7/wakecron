@@ -337,12 +337,12 @@ and pasted. The top of the README gets a one-line pointer to it. It has six part
    - The steps:
      1. Pick a backup and check its `shortcut-names.txt`.
      2. Quit Shortcuts.
-     3. Edit only the first line below, then run all four lines:
+     3. Edit only the first line below, then run all three lines. The last line stops before it
+        touches your library if the backup isn't there:
         ```bash
         BACKUP=~/Documents/Backups/Shortcuts/daily/2026-11-05
         SAVED=~/Documents/Backups/Shortcuts/before-restore-$(date +%Y%m%d-%H%M%S)
-        mkdir -p "$SAVED" && mv ~/Library/Shortcuts/Shortcuts.sqlite* "$SAVED"/
-        gunzip -c "$BACKUP/Shortcuts.sqlite.gz" > ~/Library/Shortcuts/Shortcuts.sqlite
+        [ -f "$BACKUP/Shortcuts.sqlite.gz" ] && mkdir -p "$SAVED" && mv ~/Library/Shortcuts/Shortcuts.sqlite* "$SAVED"/ && gunzip -c "$BACKUP/Shortcuts.sqlite.gz" > ~/Library/Shortcuts/Shortcuts.sqlite && echo "Restored. Now restart your Mac."
         ```
      4. Restart the Mac, then open Shortcuts.
    - To undo: quit Shortcuts, move the files from the `before-restore-…` folder back into
