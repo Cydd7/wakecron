@@ -3,6 +3,8 @@
 // Backs up the Apple Shortcuts library into daily, weekly and monthly copies.
 // A step of scripts/morning.sh. Design: docs/superpowers/specs/2026-11-06-morning-routine-design.md
 
+const path = require('node:path');
+
 const KINDS = ['daily', 'weekly', 'monthly'];
 const DATED = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -59,4 +61,90 @@ function planRotation({ today, existing, keep }) {
   return { replaceDaily: dated.daily.includes(today), weekly, monthly, prune };
 }
 
-module.exports = { localDate, mondayOf, planRotation };
+// ---- Options (pure) -----------------------------------------------------------------------
+
+const USAGE = [
+  'usage: node morning/backup-shortcuts.js [--to DIR] [--daily N] [--weekly N] [--monthly N]',
+  'Backs up all your Apple Shortcuts into DIR/daily, DIR/weekly and DIR/monthly.',
+  '  --to DIR      backup folder (default: ~/Documents/Backups/Shortcuts)',
+  '  --daily N     daily backups to keep (default: 7)',
+  '  --weekly N    weekly backups to keep (default: 4)',
+  '  --monthly N   monthly backups to keep (default: 12)',
+].join('\n');
+
+class UsageError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'UsageError';
+  }
+}
+
+const VALUE_OPTIONS = ['to', ...KINDS];
+
+function parseOptions(argv, home, cwd = process.cwd()) {
+  const options = { help: false, to: path.join(home, 'Documents', 'Backups', 'Shortcuts'), keep: { daily: 7, weekly: 4, monthly: 12 } };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '-h' || arg === '--help') {
+      options.help = true;
+      continue;
+    }
+    if (!arg.startsWith('-')) throw new UsageError(`unexpected argument "${arg}"`);
+    const eq = arg.indexOf('=');
+    const name = arg.slice(2, eq === -1 ? undefined : eq);
+    if (!arg.startsWith('--') || !VALUE_OPTIONS.includes(name)) throw new UsageError(`unknown option "${arg}"`);
+    let value;
+    if (eq !== -1) value = arg.slice(eq + 1);
+    else if (i + 1 < argv.length) value = argv[(i += 1)];
+    if (value === undefined || value === '') throw new UsageError(`--${name} needs a value`);
+
+    if (name === 'to') {
+      const expanded = value === '~' || value.startsWith('~/') ? home + value.slice(1) : value;
+      options.to = path.resolve(cwd, expanded);
+    } else {
+      const count = /^\d+$/.test(value) ? Number(value) : NaN;
+      if (!(count >= 1 && count <= 999)) throw new UsageError(`--${name} must be a whole number from 1 to 999 (got "${value}")`);
+      options.keep[name] = count;
+    }
+  }
+  return options;
+}
+
+// ---- Output text (pure) -------------------------------------------------------------------
+
+// The output of `shortcuts list`: one name per line, kept exactly, sorted without regard to case.
+function parseNames(text) {
+  const byCodePoint = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  return text.split('\n')
+    .filter((line) => line.trim() !== '')
+    .sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }) || byCodePoint(a, b));
+}
+
+// Decimal units, like Finder.
+function formatSize(bytes) {
+  const kb = Math.round(bytes / 1000);
+  if (kb < 1000) return `${Math.max(1, kb)} KB`;
+  return `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
+function tildePath(p, home) {
+  if (p === home) return '~';
+  return p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function summaryLines({ count, size, folder, replaced, weekly, monthly, removed }) {
+  const what = count === null ? 'your Shortcuts library' : plural(count, 'shortcut');
+  const lines = [`Backed up ${what} (${size}) to ${folder}${replaced ? " (replaced today's earlier backup)" : ''}`];
+  if (weekly && monthly) lines.push("Also this week's and this month's backup.");
+  else if (weekly) lines.push("Also this week's backup.");
+  else if (monthly) lines.push("Also this month's backup.");
+  if (removed.length > 0) lines.push(`Removed ${plural(removed.length, 'old backup')}: ${removed.join(', ')}`);
+  return lines;
+}
+
+module.exports = {
+  localDate, mondayOf, planRotation,
+  USAGE, UsageError, parseOptions, parseNames, formatSize, tildePath, summaryLines,
+};
