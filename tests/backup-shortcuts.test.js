@@ -433,7 +433,7 @@ test('a dated folder with no backup in it is yours: never counted or deleted', (
   assert.doesNotMatch(r.stdout, /Removed/);
 });
 
-test('backs up a library another program has open, changes not yet checkpointed included, without writing to it',
+test('backs up a library another program has open, changes not yet checkpointed included, without changing it',
   { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, async () => {
     const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
     fs.mkdirSync(path.dirname(sb.library), { recursive: true });
@@ -467,12 +467,12 @@ test("a sqlite3 startup file (~/.sqliterc) doesn't break the backup", { skip: !H
   assert.ok(fs.existsSync(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz')));
 });
 
-test('works when the temp and backup folders have spaces, quotes and a backslash in their paths', // Review Focus 1
+test('works when the temp and backup folders have spaces, quotes, backslashes and a newline in their paths', // Review Focus 1
   { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, () => {
     const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
     fs.mkdirSync(path.dirname(sb.library), { recursive: true });
     sqlite(sb.library, "CREATE TABLE ZSHORTCUT (ZNAME TEXT); INSERT INTO ZSHORTCUT VALUES ('A');");
-    const tmp = path.join(sb.dir, 'tmp "quoted" \\ dir');
+    const tmp = path.join(sb.dir, 'tmp "quoted" \'single\' \\ \\n\\101 new\nline dir');
     fs.mkdirSync(tmp);
     const to = path.join(sb.home, 'My "Backups"', 'Shortcuts');
     const r = sb.run(['--to', to], { tmpDir: tmp });
@@ -525,7 +525,7 @@ test('blocked by macOS privacy rules: the message names the node that needs Full
   assert.equal(r.stderr, [
     'backup-shortcuts: macOS blocked access to ~/Library/Shortcuts (operation not permitted).',
     'Give node Full Disk Access once: System Settings → Privacy & Security → Full Disk Access →',
-    `click + → press ⌘⇧G → paste ${fs.realpathSync(process.execPath)} → Open, and make sure its switch is on.`,
+    `click + → press ⌘⇧G → paste ${fs.realpathSync(process.execPath)} → press Return → Open, and make sure its switch is on.`,
     'Started it from Terminal? Then Terminal needs Full Disk Access instead.',
     'After a Homebrew upgrade of node, macOS forgets this; do it again with the new path.',
     '',
@@ -584,6 +584,28 @@ test("a failure after today's backup is saved removes nothing", () => {
   assert.deepEqual(fs.readdirSync(path.join(sb.to, 'weekly')).sort(), ['2026-10-26', '2026-11-06']); // no .incoming-* left
 });
 
+test("if replacing today's backup fails, today's earlier backup is put back", () => {
+  const sb = sandbox();
+  sb.run([]);
+  fs.writeFileSync(sb.library, 'library v2');
+  const today = path.join(sb.to, 'daily', '2026-11-06');
+  const realRename = fs.renameSync;
+  fs.renameSync = (from, to) => { // only the new backup's move into place fails
+    if (to === today && path.basename(from).startsWith('.incoming-')) throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
+    return realRename(from, to);
+  };
+  let r;
+  try {
+    r = sb.run([], { now: new Date(2026, 10, 6, 9, 30) });
+  } finally {
+    fs.renameSync = realRename;
+  }
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.startsWith("backup-shortcuts: can't write to ~/Documents/Backups/Shortcuts: EIO"), r.stderr);
+  assert.equal(gunzip(path.join(today, 'Shortcuts.sqlite.gz')), 'library v1');
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'daily')), ['2026-11-06']); // no .replaced-* or .incoming-* left
+});
+
 test('shortcuts list failing only warns: the backup is saved without the names file', () => {
   const sb = sandbox();
   const r = sb.run([], { env: { FAKE_SHORTCUTS: 'fail' } });
@@ -598,6 +620,7 @@ test('shortcuts list hanging only warns, once its time limit passes', () => { //
   const r = sb.run([], { env: { FAKE_SHORTCUTS: 'hang' }, timeouts: { copy: 300000, names: 500 } });
   assert.equal(r.code, 0);
   assert.equal(r.stderr, "backup-shortcuts: warning: couldn't list shortcut names (timed out); the backup is saved without shortcut-names.txt\n");
+  assert.deepEqual(fs.readdirSync(path.join(sb.to, 'daily/2026-11-06')), ['Shortcuts.sqlite.gz']);
 });
 
 test('leftovers from a crashed run are removed after an hour; recent ones are kept', () => {

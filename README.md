@@ -167,6 +167,10 @@ Each morning adds a backup to `~/Documents/Backups/Shortcuts`:
   only ever deletes its own backups: dated folders with a `Shortcuts.sqlite.gz` inside. A folder
   dated in the future, left by a wrong clock, is never deleted and never pushes out a new backup.
 
+Your backups hold everything in your shortcuts, including anything typed into them, such as API
+keys or addresses. Only your Mac user can open them, but if your Documents folder syncs to iCloud,
+they're uploaded there too.
+
 The routine's output is in `logs/morning-0700.log`.
 
 To use another folder or keep more backups, edit the `step` line in `scripts/morning.sh`. For
@@ -247,7 +251,8 @@ The routine never deletes `before-restore-…` or `undone-…` folders.
 
 ### When something goes wrong
 
-- **A "morning.sh failed" notification:** see what happened with `tail -n 20 logs/morning-0700.log`.
+- **A "morning.sh failed" notification:** see what happened with `tail -n 20 logs/morning-*.log`.
+  The 7:00 run writes to `logs/morning-0700.log`; the "Try it now" run has a log of its own.
 - **The log says "macOS blocked access":** do setup step 1 again. With Homebrew's Node you need to
   after every `brew upgrade node`, because macOS ties the permission to that exact `node` file.
   Node from the [nodejs.org](https://nodejs.org) installer keeps the permission.
@@ -286,7 +291,9 @@ The routine never deletes `before-restore-…` or `undone-…` folders.
   Privacy & Security.
 - **Moved this folder, or switched Node versions with nvm?** Run `./wakecron sync`.
   `./wakecron list` tells you when it's needed. Homebrew upgrades need nothing: jobs use
-  `/opt/homebrew/bin/node`, which survives them.
+  `/opt/homebrew/bin/node`, which survives them. The one exception is the morning routine's Full
+  Disk Access, which macOS forgets after `brew upgrade node` (see
+  [When something goes wrong](#when-something-goes-wrong)).
 - **Nothing happened?** Check `./wakecron list` for ✗ and `!` lines, then `logs/`, then
   `pmset -g sched`, which should list wake-ups `by 'wakecron'`.
 

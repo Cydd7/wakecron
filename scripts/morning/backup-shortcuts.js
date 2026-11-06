@@ -217,7 +217,7 @@ function fullDiskAccessMessage(ctx, folder) {
   return [
     `macOS blocked access to ${folder} (operation not permitted).`,
     'Give node Full Disk Access once: System Settings → Privacy & Security → Full Disk Access →',
-    `click + → press ⌘⇧G → paste ${node} → Open, and make sure its switch is on.`,
+    `click + → press ⌘⇧G → paste ${node} → press Return → Open, and make sure its switch is on.`,
     'Started it from Terminal? Then Terminal needs Full Disk Access instead.',
     'After a Homebrew upgrade of node, macOS forgets this; do it again with the new path.',
   ].join('\n');

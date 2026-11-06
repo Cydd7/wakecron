@@ -49,7 +49,7 @@ Goals:
 2. Adding a step takes one line.
 3. Every run backs up the whole Shortcuts library, keeps daily, weekly and monthly copies, and
    removes old ones.
-4. The step never writes to the Shortcuts library. It never deletes a backup unless the new backup
+4. The step never modifies the Shortcuts database file. It never deletes a backup unless the new backup
    is complete and checked. It never deletes anything it did not create.
 5. Every failure prints one clear message that includes the fix. This matters most for the Full
    Disk Access case.
@@ -182,7 +182,9 @@ node morning/backup-shortcuts.js [--to DIR] [--daily N] [--weekly N] [--monthly 
    `sqlite3 -init /dev/null -readonly -cmd ".timeout 10000" <library> ".backup <temp>/Shortcuts.sqlite"`.
    - `-init /dev/null` stops sqlite3 from first running the person's `~/.sqliterc`, whose settings
      (such as `.headers on`) would change what the check prints.
-   - Because the library is opened read-only, the copy never writes to it and never checkpoints it.
+   - Because the library is opened read-only, the copy never changes the database file and never
+     checkpoints it. SQLite may leave its usual `-shm` and `-wal` companion files next to it when
+     nothing else had the library open; they are harmless and must not be deleted.
    - The copy is a consistent snapshot, including changes still in the WAL file.
    - The copy has a 5-minute time limit.
 4. **Check.** `sqlite3 -init /dev/null -readonly <copy> "PRAGMA quick_check;"` must print exactly `ok`. The check
@@ -292,8 +294,8 @@ The Full Disk Access message is below. The node path in it is
 ```
 backup-shortcuts: macOS blocked access to ~/Library/Shortcuts (operation not permitted).
 Give node Full Disk Access once: System Settings → Privacy & Security → Full Disk Access →
-click + → press ⌘⇧G → paste /opt/homebrew/Cellar/node/25.1.0/bin/node → Open, and make sure
-its switch is on.
+click + → press ⌘⇧G → paste /opt/homebrew/Cellar/node/25.1.0/bin/node → press Return → Open,
+and make sure its switch is on.
 Started it from Terminal? Then Terminal needs Full Disk Access instead.
 After a Homebrew upgrade of node, macOS forgets this; do it again with the new path.
 ```
@@ -303,7 +305,7 @@ After a Homebrew upgrade of node, macOS forgets this; do it again with the new p
 - Shortcuts can contain secrets that were typed into them, such as API keys or addresses.
   Folders the step creates are therefore mode 0700 and files 0600.
 - The temporary copy sits in a private (0700) temporary folder and is always deleted.
-- The library is opened read-only, and the step never writes to it.
+- The library is opened read-only, and the step never modifies the database file.
 - The step makes no network connections. Copies leave the Mac only if the backup folder itself
   syncs, for example when Documents is stored in iCloud.
 - Pruning deletes only folders named `YYYY-MM-DD`, dated today or earlier and holding a
