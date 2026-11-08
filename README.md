@@ -12,6 +12,8 @@ At 07:29 the Mac wakes up. At 07:30 `backup.sh` runs, and the Mac stays awake un
 script finishes, then goes back to sleep on its usual timer. If the Mac slept through the time
 anyway, the script runs as soon as the Mac wakes.
 
+**Included:** a morning routine that backs up your Apple Shortcuts every day. See [Morning routine](#morning-routine).
+
 ## Requirements
 
 - macOS
@@ -98,6 +100,164 @@ Job ids look like `backup-0730`: the script name plus the time.
 - Output is captured until every process that holds it exits. If a script starts something that
   keeps running, detach it: `long-task >/dev/null 2>&1 &`.
 
+## Morning routine
+
+`scripts/morning.sh` runs a list of steps every morning at 7:00, once you schedule it. Right now it
+has one step: it backs up all your Apple Shortcuts, keeping daily, weekly and monthly copies.
+
+### Set it up (once, on your Mac, after `./wakecron setup`)
+
+1. **Let node read your Shortcuts.** macOS keeps the Shortcuts library private, so the `node` that
+   runs wakecron needs Full Disk Access.
+   1. In Terminal, run this and copy the path it prints:
+
+      ```bash
+      node -p "require('fs').realpathSync(process.execPath)"
+      ```
+
+   2. Open System Settings → Privacy & Security → Full Disk Access.
+   3. Click **+**, press ⌘⇧G, paste the path, press Return, then click **Open**.
+   4. Check that the switch next to `node` is on.
+2. **Schedule it** for 7:00 every day:
+
+   ```bash
+   ./wakecron add morning.sh 07:00
+   ```
+
+3. **Try it now** instead of waiting until tomorrow. This runs the routine once, two minutes from
+   now, the same way the 7:00 run will:
+
+   ```bash
+   ./wakecron add morning.sh +2m
+   ```
+
+   Two minutes later, this lists today's backup:
+
+   ```bash
+   ls ~/Documents/Backups/Shortcuts/daily
+   ```
+
+   and this shows how the run went:
+
+   ```bash
+   cat logs/morning-*.log
+   ```
+
+### What you get
+
+Each morning adds a backup to `~/Documents/Backups/Shortcuts`:
+
+```
+~/Documents/Backups/Shortcuts/
+├── daily/
+│   └── 2026-11-06/
+│       ├── Shortcuts.sqlite.gz    your whole Shortcuts library, compressed
+│       └── shortcut-names.txt     the names of the shortcuts in it
+├── weekly/
+│   └── 2026-11-02/                the same two files
+└── monthly/
+    └── 2026-11-01/                the same two files
+```
+
+- **Daily:** the newest 7 are kept. Running the routine again on the same day replaces that day's
+  backup.
+- **Weekly and monthly:** the first backup of each week (Monday to Sunday) is also kept in
+  `weekly/`, newest 4, and the first backup of each month in `monthly/`, newest 12.
+- **Counted, not aged:** if the Mac is off for a while, your most recent backups stay. The routine
+  only ever deletes its own backups: dated folders with a `Shortcuts.sqlite.gz` inside. A folder
+  dated in the future, left by a wrong clock, is never deleted and never pushes out a new backup.
+
+Your backups hold everything in your shortcuts, including anything typed into them, such as API
+keys or addresses. Only your Mac user can open them, but if your Documents folder syncs to iCloud,
+they're uploaded there too.
+
+The routine's output is in `logs/morning-0700.log`.
+
+To use another folder or keep more backups, edit the `step` line in `scripts/morning.sh`. For
+example:
+
+```bash
+step "Back up Shortcuts" node morning/backup-shortcuts.js --to "$HOME/Documents/Backups/Shortcuts" --daily 14 --weekly 8 --monthly 24
+```
+
+### Add a step
+
+1. Put your script in `scripts/morning/`, for example `scripts/morning/weather.sh`.
+2. Add a line for it in `scripts/morning.sh`, above `exit "$failed"`:
+
+   ```bash
+   step "Check the weather" bash morning/weather.sh
+   ```
+
+Use `node morning/your-script.js` or `python3 morning/your-script.py` the same way. Steps run in
+order. A step that fails doesn't stop the others, but you get a "morning.sh failed" notification.
+
+### Restore a backup
+
+**This hasn't been tested yet; read it all before you start.**
+
+- Make sure Time Machine has a recent backup of your Mac first.
+- If your shortcuts sync through iCloud, changes made after the backup, deletions included, may
+  sync back afterwards.
+- Terminal needs Full Disk Access for these commands. Give it the same way as in setup step 1, but
+  add the Terminal app (Applications → Utilities → Terminal) instead of the node path.
+
+1. Pick a backup, and open its `shortcut-names.txt` to check it has what you need.
+2. Quit the Shortcuts app.
+3. Change the first line below to the backup you picked, then paste the whole block into Terminal:
+
+   ```bash
+   BACKUP=~/Documents/Backups/Shortcuts/daily/2026-11-05
+   SAVED=~/Documents/Backups/Shortcuts/before-restore-$(date +%Y%m%d-%H%M%S)
+   if gunzip -t "$BACKUP/Shortcuts.sqlite.gz"; then
+     mkdir -p "$SAVED" &&
+     find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} "$SAVED"/ \; &&
+     [ -z "$(find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*')" ] &&
+     gunzip -c "$BACKUP/Shortcuts.sqlite.gz" > ~/Library/Shortcuts/Shortcuts.sqlite &&
+     echo "Restored. Now restart your Mac." ||
+     echo "Restore failed. Anything it moved is in $SAVED; put it back with the undo commands below."
+   else
+     echo "That backup can't be read. Nothing was changed."
+   fi
+   ```
+
+   It ends by printing one of three lines:
+   - **Restored. Now restart your Mac.** It worked.
+   - **That backup can't be read. Nothing was changed.** Pick another backup.
+   - **Restore failed.** Your own library is safe in the `before-restore-…` folder the line names.
+     Put it back with the undo commands below.
+4. Restart the Mac, then open Shortcuts.
+
+**To undo a restore**, quit Shortcuts, change the first line below to the `before-restore-…` folder
+the restore made, then paste the whole block into Terminal. It moves the restored library aside
+into an `undone-…` folder first, then puts back every file of yours, so the two never get mixed:
+
+```bash
+SAVED=~/Documents/Backups/Shortcuts/before-restore-20261106-093000
+UNDONE=~/Documents/Backups/Shortcuts/undone-$(date +%Y%m%d-%H%M%S)
+if [ -f "$SAVED/Shortcuts.sqlite" ]; then
+  mkdir -p "$UNDONE" &&
+  find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} "$UNDONE"/ \; &&
+  [ -z "$(find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*')" ] &&
+  find "$SAVED" -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} ~/Library/Shortcuts/ \; &&
+  echo "Undone. Now restart your Mac." ||
+  echo "Undo failed. Nothing was deleted: your library is in $SAVED, the restored one in $UNDONE."
+else
+  echo "No saved library in $SAVED. Nothing was changed."
+fi
+```
+
+The routine never deletes `before-restore-…` or `undone-…` folders.
+
+### When something goes wrong
+
+- **A "morning.sh failed" notification:** see what happened with `tail -n 20 logs/morning-*.log`.
+  The 7:00 run writes to `logs/morning-0700.log`; the "Try it now" run has a log of its own.
+- **The log says "macOS blocked access":** do setup step 1 again. With Homebrew's Node you need to
+  after every `brew upgrade node`, because macOS ties the permission to that exact `node` file.
+  Node from the [nodejs.org](https://nodejs.org) installer keeps the permission.
+- **The log says "no Shortcuts library":** open the Shortcuts app once, then try setup step 3 again.
+
 ## Logs
 
 - `logs/<id>.log` — each run's output, between `=== … start …` and `=== … exit N …` lines. When it
@@ -131,7 +291,9 @@ Job ids look like `backup-0730`: the script name plus the time.
   Privacy & Security.
 - **Moved this folder, or switched Node versions with nvm?** Run `./wakecron sync`.
   `./wakecron list` tells you when it's needed. Homebrew upgrades need nothing: jobs use
-  `/opt/homebrew/bin/node`, which survives them.
+  `/opt/homebrew/bin/node`, which survives them. The one exception is the morning routine's Full
+  Disk Access, which macOS forgets after `brew upgrade node` (see
+  [When something goes wrong](#when-something-goes-wrong)).
 - **Nothing happened?** Check `./wakecron list` for ✗ and `!` lines, then `logs/`, then
   `pmset -g sched`, which should list wake-ups `by 'wakecron'`.
 
@@ -152,6 +314,7 @@ npm test
 The tests run on macOS and Linux and never touch your real launchd, pmset or sudo.
 `WAKECRON_BIN_DIR` points wakecron at the stand-in tools in `tests/fakes/`; it is for tests only.
 One test checks the sudoers rule against real `sudo`; it runs only as root on Linux, for example
-in a CI container, and is skipped everywhere else.
+in a CI container, and is skipped everywhere else. The Shortcuts backup tests use a real sqlite3
+when one is installed (macOS has it) and skip those checks otherwise.
 
 The design and the implementation plan are in `docs/superpowers/`.
