@@ -401,6 +401,8 @@ module.exports = {
   localDate, mondayOf, planRotation,
   USAGE, UsageError, parseOptions, parseNames, formatSize, tildePath, summaryLines,
   main,
+  // Shared with restore-shortcuts.js.
+  ARCHIVE, NAMES_FILE, NO_STARTUP_FILE, firstLine, failureReason, immutableUri,
 };
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
