@@ -187,8 +187,14 @@ node morning/backup-shortcuts.js [--to DIR] [--daily N] [--weekly N] [--monthly 
      nothing else had the library open; they are harmless and must not be deleted.
    - The copy is a consistent snapshot, including changes still in the WAL file.
    - The copy has a 5-minute time limit.
-4. **Check.** `sqlite3 -init /dev/null -readonly <copy> "PRAGMA quick_check;"` must print exactly `ok`. The check
-   has the same 5-minute limit.
+4. **Check.** `sqlite3 -init /dev/null -readonly "file://<copy>?immutable=1" "PRAGMA quick_check;"` must print
+   exactly `ok`. The check has the same 5-minute limit.
+   - The copy keeps the library's WAL journal mode. Reading a WAL database needs its `-wal` and
+     `-shm` companion files, which a fresh copy doesn't have. The Mac's sqlite3 won't create them on
+     a read-only connection, so a plain read-only open fails with "unable to open database file (14)".
+   - `immutable=1` makes SQLite read that one file only, with no locks and no companion files. That
+     is safe because the copy is complete and nothing else uses it.
+   - In the path, `%`, `?` and `#` are written as `%25`, `%3F` and `%23`.
 5. **Names.** Run `shortcuts list` with a 60-second limit. Drop blank lines from its output, sort
    the rest without regard to case, and save them one per line as `shortcut-names.txt`. If the
    command fails or times out, print a warning and carry on without the file.
@@ -390,6 +396,8 @@ The tests use `npm test` (`node:test`) and run on both Linux and macOS.
    - **Output:** size units, plurals, `~` paths, the "replaced" suffix and each variant of the
      "Also" line.
    - **End to end with a real `sqlite3`** (skipped, with the reason, where it isn't installed):
+     - It runs twice: once with the installed `sqlite3`, and once with it acting like the Mac's,
+       whose read-only connections won't create a `-shm` file (`tests/fakes/mac-sqlite3.js`).
      - Set-up:
        - a sandbox `HOME` holds a WAL-mode library;
        - another `sqlite3` process keeps the library open, with rows not yet checkpointed;

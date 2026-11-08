@@ -262,6 +262,13 @@ function tidy(to) {
 // change what the check prints.
 const NO_STARTUP_FILE = ['-init', '/dev/null'];
 
+// The copy keeps the library's WAL journal mode, and SQLite reads a WAL database through two
+// companion files (-wal, -shm) that a fresh copy doesn't have. The Mac's sqlite3 won't create them
+// on a read-only connection ("unable to open database file (14)"), so the check opens the copy as
+// immutable: that one file only, with no locks and no companion files. The copy is complete and
+// nothing else touches it. In the path of an SQLite URI only %, ? and # need escaping.
+const immutableUri = (file) => `file://${path.resolve(file).replace(/[%?#]/g, (c) => encodeURIComponent(c))}?immutable=1`;
+
 // Steps 3-5: a checked copy of the library in temp, and the shortcut names (null if unavailable).
 function snapshot(library, temp, ctx) {
   const copy = path.join(temp, 'Shortcuts.sqlite');
@@ -269,7 +276,7 @@ function snapshot(library, temp, ctx) {
   if (copied.error && copied.error.code === 'ENOENT') throw new Failure('sqlite3 not found. It ships with macOS at /usr/bin/sqlite3; check PATH.');
   if (copied.error || copied.status !== 0) throw new Failure(`sqlite3 couldn't copy the library: ${failureReason(copied)}`);
 
-  const checked = runTool(ctx, 'sqlite3', [...NO_STARTUP_FILE, '-readonly', copy, 'PRAGMA quick_check;'], ctx.timeouts.copy);
+  const checked = runTool(ctx, 'sqlite3', [...NO_STARTUP_FILE, '-readonly', immutableUri(copy), 'PRAGMA quick_check;'], ctx.timeouts.copy);
   if (checked.error || checked.status !== 0 || checked.stdout.trim() !== 'ok') {
     const detail = firstLine(checked.stdout) || firstLine(checked.stderr) || failureReason(checked);
     throw new Failure(`the copy failed SQLite's integrity check (${detail}). Nothing was replaced.`);
