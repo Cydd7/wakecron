@@ -194,58 +194,50 @@ order. A step that fails doesn't stop the others, but you get a "morning.sh fail
 
 ### Restore a backup
 
-**This hasn't been tested yet; read it all before you start.**
+A backup holds your whole Shortcuts library, so restoring one replaces all your shortcuts with the
+ones in the backup. The restore script keeps your current library aside first, and one command
+puts it back.
+
+**This hasn't been tried on a real Mac yet; read it all before you start.**
 
 - Make sure Time Machine has a recent backup of your Mac first.
 - If your shortcuts sync through iCloud, changes made after the backup, deletions included, may
   sync back afterwards.
-- Terminal needs Full Disk Access for these commands. Give it the same way as in setup step 1, but
-  add the Terminal app (Applications → Utilities → Terminal) instead of the node path.
+- Terminal needs Full Disk Access. Give it the same way as in setup step 1, but add the Terminal
+  app (Applications → Utilities → Terminal) instead of the node path. Then quit and reopen
+  Terminal.
 
-1. Pick a backup, and open its `shortcut-names.txt` to check it has what you need.
-2. Quit the Shortcuts app.
-3. Change the first line below to the backup you picked, then paste the whole block into Terminal:
+1. Find the backup you want. This lists them:
 
    ```bash
-   BACKUP=~/Documents/Backups/Shortcuts/daily/2026-11-05
-   SAVED=~/Documents/Backups/Shortcuts/before-restore-$(date +%Y%m%d-%H%M%S)
-   if gunzip -t "$BACKUP/Shortcuts.sqlite.gz"; then
-     mkdir -p "$SAVED" &&
-     find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} "$SAVED"/ \; &&
-     [ -z "$(find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*')" ] &&
-     gunzip -c "$BACKUP/Shortcuts.sqlite.gz" > ~/Library/Shortcuts/Shortcuts.sqlite &&
-     echo "Restored. Now restart your Mac." ||
-     echo "Restore failed. Anything it moved is in $SAVED; put it back with the undo commands below."
-   else
-     echo "That backup can't be read. Nothing was changed."
-   fi
+   ls ~/Documents/Backups/Shortcuts/daily ~/Documents/Backups/Shortcuts/weekly ~/Documents/Backups/Shortcuts/monthly
    ```
 
-   It ends by printing one of three lines:
-   - **Restored. Now restart your Mac.** It worked.
-   - **That backup can't be read. Nothing was changed.** Pick another backup.
-   - **Restore failed.** Your own library is safe in the `before-restore-…` folder the line names.
-     Put it back with the undo commands below.
-4. Restart the Mac, then open Shortcuts.
+   Each backup's `shortcut-names.txt` lists the shortcuts in it.
+2. Quit the Shortcuts app.
+3. In the wakecron folder, run the restore script with the backup's folder (or its
+   `Shortcuts.sqlite.gz`):
 
-**To undo a restore**, quit Shortcuts, change the first line below to the `before-restore-…` folder
-the restore made, then paste the whole block into Terminal. It moves the restored library aside
-into an `undone-…` folder first, then puts back every file of yours, so the two never get mixed:
+   ```bash
+   scripts/morning/restore-shortcuts.js ~/Documents/Backups/Shortcuts/daily/2026-11-05
+   ```
+
+   It checks the backup and shows what it will do, then asks before changing anything. Your
+   current library goes into a `before-restore-…` folder, and the script prints the command that
+   undoes the restore.
+4. Restart your Mac, then open Shortcuts.
+
+**To undo a restore**, quit Shortcuts and run the command the restore printed. It looks like this:
 
 ```bash
-SAVED=~/Documents/Backups/Shortcuts/before-restore-20261106-093000
-UNDONE=~/Documents/Backups/Shortcuts/undone-$(date +%Y%m%d-%H%M%S)
-if [ -f "$SAVED/Shortcuts.sqlite" ]; then
-  mkdir -p "$UNDONE" &&
-  find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} "$UNDONE"/ \; &&
-  [ -z "$(find ~/Library/Shortcuts -maxdepth 1 -name 'Shortcuts.sqlite*')" ] &&
-  find "$SAVED" -maxdepth 1 -name 'Shortcuts.sqlite*' -exec mv {} ~/Library/Shortcuts/ \; &&
-  echo "Undone. Now restart your Mac." ||
-  echo "Undo failed. Nothing was deleted: your library is in $SAVED, the restored one in $UNDONE."
-else
-  echo "No saved library in $SAVED. Nothing was changed."
-fi
+scripts/morning/restore-shortcuts.js --undo ~/Documents/Backups/Shortcuts/before-restore-20261106-093000
 ```
+
+It moves the restored library into an `undone-…` folder and puts yours back. Then restart your Mac.
+
+**Only want a few shortcuts back?** Restore the backup, then export the shortcuts you want as files
+(in Shortcuts, look under Share for Export File). Undo the restore, then double-click each file to
+add it to your library.
 
 The routine never deletes `before-restore-…` or `undone-…` folders.
 

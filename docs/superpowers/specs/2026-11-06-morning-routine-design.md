@@ -59,7 +59,7 @@ Goals:
 Non-goals:
 
 - restoring a single shortcut;
-- a restore command (restoring is documented and done by hand);
+- restoring automatically (`scripts/morning/restore-shortcuts.js` is run by hand and asks first);
 - copies anywhere other than the backup folder;
 - notifications when a run succeeds;
 - guarding against two runs that start at the same moment;
@@ -71,10 +71,12 @@ Non-goals:
 scripts/
 ├── morning.sh                   the routine
 └── morning/
-    └── backup-shortcuts.js      step 1: back up Shortcuts
+    ├── backup-shortcuts.js      step 1: back up Shortcuts
+    └── restore-shortcuts.js     run by hand: restore a backup, or undo a restore
 tests/
 ├── morning.test.js              the routine's step runner
-└── backup-shortcuts.test.js     rotation rules, output, errors, end-to-end with real sqlite3
+├── backup-shortcuts.test.js     rotation rules, output, errors, end-to-end with real sqlite3
+└── restore-shortcuts.test.js    restore and undo, every check and failure, as a command
 README.md                        a new "Morning routine" section
 ```
 
@@ -343,30 +345,39 @@ and pasted. The top of the README gets a one-line pointer to it. It has six part
 4. **Add a step.** Put the script in `scripts/morning/`. Then add a line such as
    `step "Name" bash morning/your-script.sh` above the `exit` line. `node …` or `python3 …` work
    the same way, and no `chmod` is needed.
-5. **Restore (untested, read this first).**
+5. **Restore (not yet tried on a real Mac, read this first).**
    - Three warnings come first:
      - make sure Time Machine has a recent backup;
      - if Shortcuts syncs through iCloud, changes made since the backup, including deletions, may
        sync back;
-     - Terminal needs Full Disk Access to run these commands.
+     - Terminal needs Full Disk Access to run the script; quit and reopen Terminal after giving it.
    - The steps:
      1. Pick a backup and check its `shortcut-names.txt`.
      2. Quit Shortcuts.
-     3. Edit only the first line of the README's restore block, then paste the whole block.
-        `tests/readme-restore.test.js` runs it as written in bash and zsh. The block:
-        - checks the backup with `gunzip -t` first, and changes nothing if it can't be read;
+     3. Run `scripts/morning/restore-shortcuts.js <backup>`, where `<backup>` is a backup's
+        `Shortcuts.sqlite.gz` or the folder holding it. The script:
+        - checks first and changes nothing if a check fails: the backup exists; the Shortcuts app
+          isn't open (`pgrep -x Shortcuts`); `~/Library/Shortcuts` can be read (EPERM explains how
+          to give Terminal Full Disk Access); the backup unpacks into a private temporary folder
+          and passes `PRAGMA quick_check`, opened as `file://…?immutable=1` like the backup's check;
+        - shows the backup's path, when it was saved and how many names it lists, says where the
+          current library will be kept, and asks `Restore this backup? [y/N]`. Anything but y or
+          yes changes nothing;
         - moves every `Shortcuts.sqlite*` file (the database and its `-wal`/`-shm`) into a new
-          `before-restore-<date-time>` folder, found with `find` so a missing library is fine;
-        - unpacks the backup only if no `Shortcuts.sqlite*` file is left behind;
-        - prints exactly one of `Restored. Now restart your Mac.`, `That backup can't be read.
-          Nothing was changed.` or `Restore failed. …`, which names the folder holding the
-          library.
+          `before-restore-<date-time>` folder (0700), checks that none was left behind or
+          recreated, then copies the checked database into place with the old file's mode;
+        - on any failure, puts everything back and says nothing was changed. If putting back fails
+          too, it says where every file is, and nothing is deleted;
+        - prints the exact `--undo` command, with paths quoted only where a shell needs it.
      4. Restart the Mac, then open Shortcuts.
-   - To undo, the README gives a second block that takes the `before-restore-…` folder on its
-     first line. It refuses a folder without a saved `Shortcuts.sqlite`. Otherwise it first moves
-     every current `Shortcuts.sqlite*` file into an `undone-<date-time>` folder, and only then puts
-     the saved files back. A `-wal` left by the restored library can then never be applied to the
-     person's own.
+   - `restore-shortcuts.js --undo <folder>` makes the same checks and asks `Undo the restore?
+     [y/N]`. It refuses a folder without a saved `Shortcuts.sqlite`. Otherwise it first moves every
+     current `Shortcuts.sqlite*` file into an `undone-<date-time>` folder, and only then puts the
+     saved files back, so a `-wal` left by the restored library can never be applied to the
+     person's own. A `before-restore-…` folder is removed once it is empty.
+   - Exit codes: 0 when done, 1 for a problem or an answer other than yes, 2 for a usage mistake.
+     Scheduled by mistake through `wakecron add`, it has no backup path and nobody to answer, so it
+     changes nothing.
    - Pruning never touches `before-restore-*` or `undone-*` folders.
 6. **When something goes wrong.**
    - If you see the "morning.sh failed" notification, run `tail -n 20 logs/morning-0700.log`.

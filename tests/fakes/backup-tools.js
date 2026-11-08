@@ -1,11 +1,13 @@
 'use strict';
-// Stand-ins for the two tools scripts/morning/backup-shortcuts.js runs, so its tests work on any
-// OS. Invoked as: node backup-tools.js <sqlite3|shortcuts> ...args (each test sandbox writes a
-// tiny bin/ wrapper per tool). Every call is appended to $FAKE_LOG as a JSON array [tool, ...args].
+// Stand-ins for the tools scripts/morning/backup-shortcuts.js and restore-shortcuts.js run, so
+// their tests work on any OS. Invoked as: node backup-tools.js <sqlite3|shortcuts|pgrep> ...args
+// (each test sandbox writes a tiny bin/ wrapper per tool). Every call is appended to $FAKE_LOG as a
+// JSON array [tool, ...args].
 //
 // sqlite3:   ".backup "<dest>"" copies the library (the argument before it) to <dest>;
 //            FAKE_SQLITE=fail-copy makes that fail. "PRAGMA quick_check;" prints $FAKE_CHECK or ok.
 // shortcuts: "list" prints $FAKE_NAMES; FAKE_SHORTCUTS=fail makes it fail, =hang never exits.
+// pgrep:     "-x Shortcuts" finds the Shortcuts app (exit 0) only when FAKE_PGREP=running.
 const fs = require('node:fs');
 
 const [tool, ...args] = process.argv.slice(2);
@@ -42,6 +44,13 @@ function shortcuts() {
   process.stdout.write(process.env.FAKE_NAMES ?? '');
 }
 
+function pgrep() {
+  if (args.join(' ') !== '-x Shortcuts') fail(`fake pgrep: unsupported ${JSON.stringify(args)}`, 64);
+  if (process.env.FAKE_PGREP !== 'running') process.exit(1);
+  process.stdout.write('4242\n');
+}
+
 if (tool === 'sqlite3') sqlite3();
+else if (tool === 'pgrep') pgrep();
 else if (tool === 'shortcuts') shortcuts();
 else fail(`backup-tools: unknown tool "${tool}"`, 64);
