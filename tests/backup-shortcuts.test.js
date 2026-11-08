@@ -16,6 +16,7 @@ const {
 // ---- Helpers --------------------------------------------------------------------------------
 
 const FAKE_TOOLS = path.join(__dirname, 'fakes', 'backup-tools.js');
+const MAC_SQLITE = path.join(__dirname, 'fakes', 'mac-sqlite3.js');
 const FRI_7AM = new Date(2026, 10, 6, 7, 0);
 const NAMES = 'Morning Weather\nbackup notes\nZoom Link\n';
 const HAS_SQLITE = spawnSync('sqlite3', ['-version']).status === 0;
@@ -29,6 +30,7 @@ process.on('exit', () => {
 const capture = () => ({ text: '', write(chunk) { this.text += chunk; } });
 
 // A throwaway HOME with a Shortcuts library, a bin/ of stand-in tools and a private temp folder.
+// realSqlite: true puts this machine's sqlite3 on PATH; 'mac' puts it there acting like the Mac's.
 function sandbox({ library = 'library v1', tools = ['sqlite3', 'shortcuts'], realSqlite = false } = {}) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'backup-test-')));
   sandboxes.push(dir);
@@ -43,6 +45,9 @@ function sandbox({ library = 'library v1', tools = ['sqlite3', 'shortcuts'], rea
   }
   for (const tool of tools) {
     fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_TOOLS}" ${tool} "$@"\n`, { mode: 0o755 });
+  }
+  if (realSqlite === 'mac') {
+    fs.writeFileSync(path.join(bin, 'sqlite3'), `#!/bin/sh\nexec "${process.execPath}" "${MAC_SQLITE}" "${path.join(SQLITE_DIR, 'sqlite3')}" "$@"\n`, { mode: 0o755 });
   }
   const log = path.join(dir, 'calls.jsonl');
   const env = { PATH: realSqlite ? `${bin}:${SQLITE_DIR}` : bin, HOME: home, FAKE_LOG: log, FAKE_NAMES: NAMES };
@@ -350,14 +355,14 @@ test('backups are private: folders 0700, files 0600', () => {
   }
 });
 
-test('sqlite3 copies the library read-only with a busy timeout, then checks the copy', () => {
+test('sqlite3 copies the library read-only with a busy timeout, then checks the copy as one immutable file', () => {
   const sb = sandbox();
   sb.run([]);
   const [copy, check] = sb.calls('sqlite3');
   assert.deepEqual(copy.slice(0, 6), ['-init', '/dev/null', '-readonly', '-cmd', '.timeout 10000', sb.library]);
   assert.ok(copy[6].startsWith(`.backup "${sb.tmp}/backup-shortcuts-`), copy[6]);
   assert.ok(copy[6].endsWith('/Shortcuts.sqlite"'), copy[6]);
-  assert.deepEqual(check, ['-init', '/dev/null', '-readonly', copy[6].slice(9, -1), 'PRAGMA quick_check;']);
+  assert.deepEqual(check, ['-init', '/dev/null', '-readonly', `file://${copy[6].slice(9, -1)}?immutable=1`, 'PRAGMA quick_check;']);
   assert.deepEqual(sb.calls('shortcuts'), [['list']]);
   assert.deepEqual(fs.readdirSync(sb.tmp), []); // the temporary copy is gone
 });
@@ -433,27 +438,32 @@ test('a dated folder with no backup in it is yours: never counted or deleted', (
   assert.doesNotMatch(r.stdout, /Removed/);
 });
 
-test('backs up a library another program has open, changes not yet checkpointed included, without changing it',
-  { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, async () => {
-    const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
-    fs.mkdirSync(path.dirname(sb.library), { recursive: true });
-    sqlite(sb.library, "PRAGMA journal_mode=WAL; CREATE TABLE ZSHORTCUT (Z_PK INTEGER PRIMARY KEY, ZNAME TEXT); INSERT INTO ZSHORTCUT (ZNAME) VALUES ('Morning'), ('Evening');");
-    const holder = await holdOpen(sb.library, "PRAGMA wal_autocheckpoint=0; INSERT INTO ZSHORTCUT (ZNAME) VALUES ('Unflushed');");
-    try {
-      assert.ok(fs.statSync(`${sb.library}-wal`).size > 0);
-      const before = crypto.createHash('sha256').update(fs.readFileSync(sb.library)).digest('hex');
-      const r = sb.run([]);
-      assert.equal(r.code, 0, r.stderr);
-      assert.equal(crypto.createHash('sha256').update(fs.readFileSync(sb.library)).digest('hex'), before);
-      const copy = path.join(sb.dir, 'unpacked.sqlite');
-      fs.writeFileSync(copy, zlib.gunzipSync(fs.readFileSync(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz'))));
-      assert.equal(sqlite(copy, 'PRAGMA quick_check;'), 'ok\n');
-      assert.equal(sqlite(copy, 'SELECT ZNAME FROM ZSHORTCUT ORDER BY Z_PK;'), 'Morning\nEvening\nUnflushed\n');
-      assert.deepEqual(fs.readdirSync(sb.tmp), []);
-    } finally {
-      await holder.close();
-    }
-  });
+// The copy keeps the library's WAL mode. The Mac's sqlite3 can read the library, which the
+// Shortcuts app keeps open, but its read-only connections won't create the -shm file that a fresh
+// copy needs ("unable to open database file (14)"); this machine's sqlite3 creates it.
+for (const [which, realSqlite] of [["this machine's sqlite3", true], ["a sqlite3 that acts like the Mac's", 'mac']]) {
+  test(`backs up a library another program has open, changes not yet checkpointed included, without changing it (${which})`,
+    { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, async () => {
+      const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite });
+      fs.mkdirSync(path.dirname(sb.library), { recursive: true });
+      sqlite(sb.library, "PRAGMA journal_mode=WAL; CREATE TABLE ZSHORTCUT (Z_PK INTEGER PRIMARY KEY, ZNAME TEXT); INSERT INTO ZSHORTCUT (ZNAME) VALUES ('Morning'), ('Evening');");
+      const holder = await holdOpen(sb.library, "PRAGMA wal_autocheckpoint=0; INSERT INTO ZSHORTCUT (ZNAME) VALUES ('Unflushed');");
+      try {
+        assert.ok(fs.statSync(`${sb.library}-wal`).size > 0);
+        const before = crypto.createHash('sha256').update(fs.readFileSync(sb.library)).digest('hex');
+        const r = sb.run([]);
+        assert.equal(r.code, 0, r.stderr);
+        assert.equal(crypto.createHash('sha256').update(fs.readFileSync(sb.library)).digest('hex'), before);
+        const copy = path.join(sb.dir, 'unpacked.sqlite');
+        fs.writeFileSync(copy, zlib.gunzipSync(fs.readFileSync(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz'))));
+        assert.equal(sqlite(copy, 'PRAGMA quick_check;'), 'ok\n');
+        assert.equal(sqlite(copy, 'SELECT ZNAME FROM ZSHORTCUT ORDER BY Z_PK;'), 'Morning\nEvening\nUnflushed\n');
+        assert.deepEqual(fs.readdirSync(sb.tmp), []);
+      } finally {
+        await holder.close();
+      }
+    });
+}
 
 test("a sqlite3 startup file (~/.sqliterc) doesn't break the backup", { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, () => {
   const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
@@ -467,12 +477,12 @@ test("a sqlite3 startup file (~/.sqliterc) doesn't break the backup", { skip: !H
   assert.ok(fs.existsSync(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz')));
 });
 
-test('works when the temp and backup folders have spaces, quotes, backslashes and a newline in their paths', // Review Focus 1
+test('works when the temp and backup folders have spaces, quotes, backslashes, %, ?, # and a newline in their paths', // Review Focus 1
   { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, () => {
     const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
     fs.mkdirSync(path.dirname(sb.library), { recursive: true });
     sqlite(sb.library, "CREATE TABLE ZSHORTCUT (ZNAME TEXT); INSERT INTO ZSHORTCUT VALUES ('A');");
-    const tmp = path.join(sb.dir, 'tmp "quoted" \'single\' \\ \\n\\101 new\nline dir');
+    const tmp = path.join(sb.dir, 'tmp "quoted" \'single\' \\ \\n\\101 %41 100% ?x=1&y #top new\nline dir');
     fs.mkdirSync(tmp);
     const to = path.join(sb.home, 'My "Backups"', 'Shortcuts');
     const r = sb.run(['--to', to], { tmpDir: tmp });
@@ -480,6 +490,15 @@ test('works when the temp and backup folders have spaces, quotes, backslashes an
     assert.ok(fs.existsSync(path.join(to, 'daily/2026-11-06/Shortcuts.sqlite.gz')));
     assert.deepEqual(fs.readdirSync(tmp), []);
   });
+
+test('works when the temp folder is a relative path', { skip: !HAS_SQLITE && 'sqlite3 is not installed' }, () => {
+  const sb = sandbox({ library: null, tools: ['shortcuts'], realSqlite: true });
+  fs.mkdirSync(path.dirname(sb.library), { recursive: true });
+  sqlite(sb.library, "CREATE TABLE ZSHORTCUT (ZNAME TEXT); INSERT INTO ZSHORTCUT VALUES ('A');");
+  const r = sb.run([], { tmpDir: path.relative(process.cwd(), sb.tmp) });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(fs.existsSync(path.join(sb.to, 'daily/2026-11-06/Shortcuts.sqlite.gz')));
+});
 
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'morning', 'backup-shortcuts.js');
 
